@@ -6,6 +6,12 @@ import {SwarmHandler} from "./SwarmPrices.invariant.t.sol";
 import {IMDNames} from "../src/IMDNames.sol";
 import {LARPBurner, IBurnable} from "../src/LARPBurner.sol";
 import {SwarmPrices, Attestation} from "../src/SwarmPrices.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {PoolKey as V4PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 /// @dev The real names governance and real local v4 pair share one call sequence.
 /// The share is never vm.store'd or mocked: only signed, approved execution can
@@ -14,19 +20,40 @@ contract ShareSettlementHandler is SwarmHandler {
     LARPBurner public immutable burner;
     MockIMD6900 public immutable token6900;
     address public immutable poolManager;
+    V4PoolKey internal pairKey;
     bool public pairRefuses;
+    uint256 public clippedBurns;
     uint256 public donated;
     uint256 public spentOnPair;
     uint256 public burns;
     uint256 public gasRefusals;
     uint256 public fallbackBurns;
 
-    constructor(IMDNames n, MockIntake intake_, MockIMD imd_, uint256 key, LARPBurner b, MockIMD6900 t)
-        SwarmHandler(n, intake_, imd_, key)
-    {
+    constructor(
+        IMDNames n,
+        MockIntake intake_,
+        MockIMD imd_,
+        uint256 key,
+        LARPBurner b,
+        MockIMD6900 t,
+        V4PoolKey memory pairKey_
+    ) SwarmHandler(n, intake_, imd_, key) {
         burner = b;
         token6900 = t;
         poolManager = address(b.POOL_MANAGER());
+        pairKey = pairKey_;
+    }
+
+    /// @dev The most one call may sell into the pair pool (AUDIT.md L-16): 2% of the pool's virtual $IMD reserve at
+    /// its current price, computed from the PoolManager's state independently of the burner.
+    function pairRoom() public view returns (uint256) {
+        (uint160 sqrtPrice,,,) = StateLibrary.getSlot0(IPoolManager(poolManager), PoolIdLibrary.toId(pairKey));
+        uint128 liquidity = StateLibrary.getLiquidity(IPoolManager(poolManager), PoolIdLibrary.toId(pairKey));
+        if (sqrtPrice == 0 || liquidity == 0) return 0;
+        uint256 reserve = Currency.unwrap(pairKey.currency0) == address(imd)
+            ? FullMath.mulDiv(liquidity, 1 << 96, sqrtPrice)
+            : FullMath.mulDiv(liquidity, sqrtPrice, 1 << 96);
+        return reserve * 200 / 10_000;
     }
 
     function donate(uint256 amount) external {
@@ -65,6 +92,10 @@ contract ShareSettlementHandler is SwarmHandler {
     function burn(bool tooLittleGas, uint256 callerSeed) external {
         uint256 held = imd.balanceOf(address(burner));
         uint256 share = held * expected.share / 10_000;
+        // the leg is the voted share, clipped to the pool's room (L-16); the clipped part is IMD's burn's
+        uint256 room = pairRoom();
+        bool clipped = share > room;
+        if (clipped) share = room;
         uint256 poolImd = imd.balanceOf(poolManager);
         uint256 pool6900 = token6900.balanceOf(poolManager);
         uint256 supply = token6900.totalSupply();
@@ -85,8 +116,9 @@ contract ShareSettlementHandler is SwarmHandler {
         }
         assertTrue(ok, "a fully funded burn remains live");
         uint256 spent = imd.balanceOf(poolManager) - poolImd;
-        assertEq(spent, pairRefuses ? 0 : share, "the executed share, or zero on a refused pair");
-        assertEq(imd.balanceOf(burner.IMD_BURN()) - canonical, held - spent);
+        assertEq(spent, pairRefuses ? 0 : share, "the executed share within the room, or zero on a refused pair");
+        assertLe(spent, room, "one call never sells the pair more than 2% of its depth");
+        assertEq(imd.balanceOf(burner.IMD_BURN()) - canonical, held - spent, "the rest, clipped or refused, is IMD's");
         assertEq(
             token6900.totalSupply() - token6900.balanceOf(poolManager),
             supply - pool6900,
@@ -99,6 +131,7 @@ contract ShareSettlementHandler is SwarmHandler {
         spentOnPair += spent;
         ++burns;
         if (pairRefuses && share != 0) ++fallbackBurns;
+        if (clipped && !pairRefuses) ++clippedBurns;
     }
 }
 
@@ -117,7 +150,8 @@ contract SwarmShareSettlementInvariantTest is Base {
         initialSupply6900 = imd6900.totalSupply();
         initialPool6900 = imd6900.balanceOf(address(pm));
         initialPoolImd = imd.balanceOf(address(pm));
-        handler = new ShareSettlementHandler(names, intake, imd, oracleKey, burner, imd6900);
+        handler = new ShareSettlementHandler(names, intake, imd, oracleKey, burner, imd6900, pair);
+        assertEq(handler.pairRoom(), _pairRoom(), "the handler's room is Base's independent reading");
         targetContract(address(handler));
         bytes4[] memory selectors = new bytes4[](13);
         selectors[0] = handler.propose.selector;
@@ -195,6 +229,9 @@ contract SwarmShareSettlementInvariantTest is Base {
         }
         assertEq(handler.executions(), 12);
         assertEq(handler.burns(), 12);
+        // 100 $IMD at 32%, 64% and 100% is above the pool's ~20 $IMD room: those legs were clipped, not sold whole
+        assertEq(handler.clippedBurns(), 3, "the three shares above the room were clipped (L-16)");
+        assertLe(handler.spentOnPair(), 9 * handler.pairRoom() + 3 * 25 ether);
     }
 
     function test_CallerGasCannotBypassShareButARefusingDependencyCanFallBack() public {

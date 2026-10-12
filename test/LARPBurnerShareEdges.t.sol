@@ -63,20 +63,41 @@ contract LARPBurnerShareEdgesTest is Base {
         _split(10_000, 690);
     }
 
+    /// @dev The leg at a 100% share, a 1,000 $IMD burn and a pool of ~1,000 $IMD depth is the room itself (L-16),
+    /// and the clipped part reaches IMD's burn as $IMD, never a searcher or 0xdEaD.
+    function test_TheClippedShareGoesToTheCanonicalBurn() public {
+        source.set(abi.encode(uint256(10_000)));
+        uint256 room = _pairRoom();
+        assertGt(room, 0);
+        uint256 pmBefore = imd.balanceOf(address(pm));
+        imd.mint(address(subject), 1_000 ether);
+        subject.burnImd{gas: 5_000_000}();
+        assertEq(imd.balanceOf(address(pm)) - pmBefore, room, "the leg is exactly the pool's room");
+        assertEq(imd.balanceOf(IMD_BURN), 1_000 ether - room, "the clipped share went to IMD's burn");
+        assertEq(imd.balanceOf(0x000000000000000000000000000000000000dEaD), 0);
+    }
+
     function _split(uint256 amount, uint256 share) internal {
         uint256 pmBefore = imd.balanceOf(address(pm));
         uint256 canonicalBefore = imd.balanceOf(IMD_BURN);
         uint256 supplyBefore = imd6900.totalSupply();
         uint256 pool6900Before = imd6900.balanceOf(address(pm));
+        // the pool's room before the leg: the cap the burner must honour (L-16), read independently
+        uint256 room = _pairRoom();
         imd.mint(address(subject), amount);
         subject.burnImd{gas: 5_000_000}();
         uint256 spent = imd.balanceOf(address(pm)) - pmBefore;
         uint256 canonical = imd.balanceOf(IMD_BURN) - canonicalBefore;
         assertEq(spent + canonical, amount, "rounding loses no IMD");
+        assertLe(spent, room, "one call never sells the pair pool more than its room");
         // A cross-multiplied bound checks floor rounding without duplicating
         // the production multiply/divide expression as an expected value.
         assertLe(spent * 10_000, amount * share);
-        assertLt(amount * share - spent * 10_000, 10_000, "less than one IMD wei may round to the remainder");
+        if (spent < room) {
+            assertLt(amount * share - spent * 10_000, 10_000, "less than one IMD wei may round to the remainder");
+        } else {
+            assertGe(amount * share, room * 10_000, "clipped only when the share is above the room");
+        }
         assertEq(supplyBefore - imd6900.totalSupply(), pool6900Before - imd6900.balanceOf(address(pm)));
         if (spent != 0) assertLt(imd6900.totalSupply(), supplyBefore);
         assertEq(imd.balanceOf(address(subject)), 0);
