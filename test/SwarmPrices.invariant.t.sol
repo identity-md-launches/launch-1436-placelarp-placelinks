@@ -79,6 +79,42 @@ contract SwarmHandler is Test {
         return ids.length;
     }
 
+    /// @dev Exercise v2's share independently of the four ETH prices, including
+    /// values outside 0..10000 and reachable steps near zero and 100%.
+    function proposeShare(uint256 who, uint16 share, bool validStep) external {
+        (uint64 s, uint64 f, uint64 l, uint64 c, uint16 current) = names.prices();
+        if (validStep) {
+            uint256 lower = (uint256(current) + 1) / 2;
+            uint256 pointLower = current > 100 ? current - 100 : 0;
+            if (pointLower < lower) lower = pointLower;
+            uint256 upper = uint256(current) * 2;
+            if (uint256(current) + 100 > upper) upper = uint256(current) + 100;
+            if (upper > 10_000) upper = 10_000;
+            share = uint16(bound(share, lower, upper));
+        }
+        SwarmPrices.Prices memory from = SwarmPrices.Prices(s, f, l, c, current);
+        SwarmPrices.Prices memory next = SwarmPrices.Prices(s, f, l, c, share);
+        bool allowed = _withinRails(from, next);
+        address proposer = proposers[who % 3];
+        uint256 beforeBalance = imd.balanceOf(proposer);
+        uint256 beforeTreasury = imd.balanceOf(intake.treasury());
+        vm.prank(proposer);
+        if (!allowed) {
+            vm.expectRevert(SwarmPrices.OutOfBounds.selector);
+            names.propose(next, 0.5 ether);
+            assertEq(imd.balanceOf(proposer), beforeBalance);
+        } else {
+            bytes32 id = names.propose(next, 0.5 ether);
+            ids.push(id);
+            lastSeen[id] = SwarmPrices.Status.Pending;
+            ++proposals;
+            assertEq(imd.balanceOf(proposer), beforeBalance - 0.5 ether);
+            assertEq(imd.balanceOf(intake.treasury()), beforeTreasury + 0.5 ether);
+            assertEq(names.imd6900ShareBps(), current, "a proposal alone cannot change the share");
+            assertEq(names.proposal(id).next.share, share);
+        }
+    }
+
     /// @dev Each price is drawn from a third of the current one to triple it, so most proposals sit at the 2x edges.
     function propose(uint256 who, uint256 s, uint256 f, uint256 l, uint256 c, uint256 fee) external {
         (uint64 cs, uint64 cf, uint64 cl, uint64 cc, uint16 csh) = names.prices();
@@ -209,6 +245,7 @@ contract SwarmHandler is Test {
             assertEq(f, p.next.four);
             assertEq(l, p.next.long);
             assertEq(c, p.next.crew);
+            assertEq(sh, p.next.share);
             assertTrue(_withinRails(before, p.next), "an applied change broke a guardrail");
             assertEq(names.epoch(), epochBefore + 1);
             assertEq(names.lastChange(), block.timestamp);
@@ -225,6 +262,7 @@ contract SwarmHandler is Test {
             assertEq(f, before.four);
             assertEq(l, before.long);
             assertEq(c, before.crew);
+            assertEq(sh, before.share);
         }
     }
 
@@ -245,6 +283,9 @@ contract SwarmHandler is Test {
             if (b[i] < lo || b[i] > hi) return false;
             if (uint256(b[i]) > uint256(a[i]) * 2 || uint256(b[i]) * 2 < a[i]) return false;
         }
+        if (to.share > names.MAX_SHARE()) return false;
+        uint256 distance = to.share > from.share ? to.share - from.share : from.share - to.share;
+        if (distance > 100 && (uint256(to.share) * 2 < from.share || to.share > uint256(from.share) * 2)) return false;
         return to.short >= to.four && to.four >= to.long;
     }
 
@@ -310,12 +351,15 @@ contract SwarmPricesInvariantTest is Base {
 
     /// @dev Prices are exactly what the last executed proposal set (or the start): nothing else moves them.
     function invariant_PricesChangeOnlyByExecution() public view {
-        (uint64 s, uint64 f, uint64 l, uint64 c,) = handler.expected();
+        (uint64 s, uint64 f, uint64 l, uint64 c, uint16 share) = handler.expected();
         SwarmPrices.Prices memory p = _prices();
         assertEq(p.short, s);
         assertEq(p.four, f);
         assertEq(p.long, l);
         assertEq(p.crew, c);
+        assertEq(p.share, share);
+        assertEq(names.imd6900ShareBps(), share);
+        assertEq(burner.shareBps(), share);
         assertEq(names.priceOf(bytes32("kek")), s);
         assertEq(names.priceOf(bytes32("pepe")), f);
         assertEq(names.priceOf(bytes32("frens")), l);
@@ -332,6 +376,7 @@ contract SwarmPricesInvariantTest is Base {
         }
         assertGe(p.short, p.four);
         assertGe(p.four, p.long);
+        assertLe(p.share, names.MAX_SHARE());
     }
 
     /// @dev The epoch counts applied changes, the proposal counter counts proposals, and the last change is the one

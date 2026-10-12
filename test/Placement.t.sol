@@ -95,6 +95,9 @@ abstract contract PlacementBase is Test {
         assertEq(b.PAIR_HOOK(), LARPPlan.PAIR_HOOK);
         assertEq(b.NAMES(), p.names(), "the burner reads the share from IMD Names");
         assertEq(b.IMD_BURN(), 0xe29386719C155B6847aD5a4E97C6674f10ffc750, "IMD's burn");
+        assertEq(b.MAX_BURN(), 0.1 ether);
+        assertEq(b.MAX_SHARE_BPS(), 10_000);
+        assertEq(b.POOL_SHARE_BPS(), 690);
         assertEq(LARP(p.larp()).IDENTITY(), LARPPlan.IDENTITY);
         IMDNames n = IMDNames(p.names());
         assertEq(n.IDENTITY(), LARPPlan.IDENTITY);
@@ -104,6 +107,7 @@ abstract contract PlacementBase is Test {
         assertEq(n.INTAKE(), LARPPlan.INTAKE);
         assertEq(n.ORACLE_SIGNER(), LARPPlan.ORACLE_SIGNER);
         assertEq(n.imd6900ShareBps(), 690, "6.9% to start");
+        assertEq(n.MAX_SHARE(), 10_000);
         assertEq(b.shareBps(), 690);
         LARPLinks l = LARPLinks(q.links());
         assertEq(l.IDENTITY(), LARPPlan.IDENTITY);
@@ -205,6 +209,15 @@ contract PlacementTest is PlacementBase {
 
     function test_FitsOneTransaction() public {
         _withCreateX();
+        _assertFitsOneTransaction();
+    }
+
+    function test_FreshChainFitsOneTransaction() public {
+        assertEq(LARPPlan.CREATEX.code.length, 0);
+        _assertFitsOneTransaction();
+    }
+
+    function _assertFitsOneTransaction() internal {
         bytes[] memory codes = new bytes[](2);
         codes[0] = type(PlaceLARP).creationCode;
         codes[1] = abi.encodePacked(type(PlaceLinks).creationCode, abi.encode(address(1)));
