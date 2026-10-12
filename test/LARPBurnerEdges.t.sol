@@ -49,19 +49,51 @@ contract LARPBurnerEdgesTest is Base {
     function test_ConstructorRefusesZeroAddresses() public {
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
         new LARPBurner(
-            address(0), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0),
+            address(imd),
+            10_000,
+            60,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
         new LARPBurner(
-            address(pm), address(0), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(0),
+            10_000,
+            60,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
-        new LARPBurner(address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(0), 0, 60, address(0), address(0));
+        new LARPBurner(
+            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(0), 0, 60, address(0), address(0)
+        );
         // the hooks may be zero: the hookless pool has none
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            60,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         assertEq(b.POOL4_HOOK(), address(0));
@@ -312,7 +344,17 @@ contract LARPBurnerEdgesTest is Base {
     function test_AWrongPool4KeyFallsToTheHooklessPool() public {
         // a burner whose POOL4 (a hook nobody initialized a pool with) does not exist on the PoolManager
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, makeAddr("hook"), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            60,
+            makeAddr("hook"),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         _fillBackup();
@@ -327,7 +369,17 @@ contract LARPBurnerEdgesTest is Base {
     function test_NoPoolAtAllParksAndQuotesNothing() public {
         // a fee tier no pool was initialized with
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 3_000, 60, address(0), 3_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            3_000,
+            60,
+            address(0),
+            3_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         _fillPool4();
@@ -370,9 +422,13 @@ contract LARPBurnerEdgesTest is Base {
         imd.mint(address(burner), held);
         uint256 pmImd = imd.balanceOf(address(pm));
         uint256 supply = imd6900.totalSupply();
+        uint256 room = _pairRoom(); // the pool's depth bounds the leg: 2% of ~1,000 $IMD here
         burner.burnImd();
         uint256 share = held * 690 / 10_000;
-        assertEq(imd.balanceOf(address(pm)) - pmImd, share, "exactly the share went to the pair pool");
+        if (share > room) share = room;
+        assertEq(
+            imd.balanceOf(address(pm)) - pmImd, share, "exactly the share, up to the pool's room, went to the pair pool"
+        );
         assertEq(imd.balanceOf(IMD_BURN), held - share, "the rest to IMD_BURN");
         assertEq(imd.balanceOf(address(burner)), 0);
         assertEq(imd6900.balanceOf(address(burner)), 0);

@@ -174,7 +174,7 @@ The artist is the plan's fixed `0x35dA9C0303507ddf708E87F2568EdDf12c47a059`, wit
 
 ```sh
 forge build
-forge test --offline  # 290 total: 277 pass locally; 13 explicitly skip without an RPC
+forge test --offline  # 296 total: 283 pass locally; 13 explicitly skip without an RPC
 MAINNET_RPC_URL=<rpc> forge test --match-contract 'MainnetForkTest|PlacementForkTest'
 ```
 
@@ -199,9 +199,13 @@ only.
 - **The IMD6900 share is swarm-voted.** It sits with the prices in IMD Names (`SwarmPrices.Prices.share`, basis points;
   `imd6900ShareBps()`): 6.9% at launch, between 0% and 100% (`MAX_SHARE`), at most 2x up or down, or one percentage
   point, per change, at most one change a week. Anyone proposes; the swarm's panel judges the whole proposal against the
-  guidelines (the share between 0% and 100%); anyone executes. The burner reads it on every burn
+  guidelines (the share between 0% and 100%, and a rising share only if the IMD6900/$IMD pool can take it: the share
+  of what 0.1 ETH buys at most 2% of the pool's $IMD depth); anyone executes. The burner reads it on every burn
   (`LARPBurner.shareBps()`: a 30k-gas read of IMD Names; 6.9% if IMD Names isn't there, reverts, eats the gas, or answers
-  more than 100%).
+  more than 100%). Whatever the share, one burn sells the pair pool at most 2% of its own $IMD depth
+  (`PAIR_LEG_BPS`, read from the PoolManager): a leg that small is a loss to sandwich through the pair's 6.9% fee each
+  way, and what the share makes above it goes to IMD's burn (AUDIT.md L-16). A payer's `minImd` floors its own fee's
+  part of the sale, not what the waiting ETH bought alongside (L-17).
 - **$IMD burns the canonical way.** Everything that isn't the IMD6900 share (and the share itself when the IMD6900 buy
   can't happen) goes to IMD's BurnExecutor, `0xe293…c750` (`LARPBurner.IMD_BURN`). Anyone sends what it holds to Base
   (`bridgeToBaseBurnReceiver`, paying LayerZero's ~0.0002 ETH), where a contract with no owner burns it (`burn()`,

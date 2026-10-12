@@ -49,7 +49,20 @@ contract MainnetForkTest is Test {
         string memory rpc = vm.envOr("MAINNET_RPC_URL", string(""));
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
-        burner = new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, POOL4_HOOK, 10_000, 200, TREASURY, 0, 60, PAIR_HOOK, vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2));
+        burner = new LARPBurner(
+            POOL_MANAGER,
+            IMD,
+            10_000,
+            60,
+            POOL4_HOOK,
+            10_000,
+            200,
+            TREASURY,
+            0,
+            60,
+            PAIR_HOOK,
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2)
+        );
         larp = new LARP(IDENTITY);
         names = new IMDNames(IDENTITY, larp, address(burner), ARTIST, INTAKE, ORACLE_SIGNER);
         links = new LARPLinks(IDENTITY, LAUNCHER, larp, names, address(burner));
@@ -124,8 +137,20 @@ contract MainnetForkTest is Test {
     /// @dev If POOL4 can't take a fee, the real hookless pool does (here: a burner pointed at a POOL4 that doesn't
     /// exist).
     function test_TheHooklessPoolTakesWhatPool4Cant() public forked {
-        LARPBurner b =
-            new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, address(0x1234), 10_000, 200, TREASURY, 0, 60, PAIR_HOOK, vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2));
+        LARPBurner b = new LARPBurner(
+            POOL_MANAGER,
+            IMD,
+            10_000,
+            60,
+            address(0x1234),
+            10_000,
+            200,
+            TREASURY,
+            0,
+            60,
+            PAIR_HOOK,
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2)
+        );
         uint256 before = IERC20Like(IMD).balanceOf(IMD_BURN);
         vm.expectEmit(true, false, true, false, address(b));
         emit Bought(0.05 ether, 0, 1); // route 1
@@ -205,12 +230,14 @@ contract MainnetForkTest is Test {
         uint256 paid = IERC20Like(IMD).balanceOf(payTo);
         vm.startPrank(proposer);
         IERC20Like(IMD).approve(address(n), 0.5 ether);
-        bytes32 id = n.propose(SwarmPrices.Prices(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether, 1380), 0.5 ether);
+        bytes32 id =
+            n.propose(SwarmPrices.Prices(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether, 1380), 0.5 ether);
         vm.stopPrank();
         assertEq(IERC20Like(IMD).balanceOf(payTo) - paid, 0.5 ether, "IMD's oracle was paid through its Intake");
 
+        // signed for the request the real Intake gave the proposal: a verdict is bound to its request (L-15)
         Attestation memory a = Attestation(
-            bytes32(bytes16(keccak256("uuid"))),
+            id,
             1,
             keccak256("q"),
             0,

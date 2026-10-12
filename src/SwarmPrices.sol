@@ -292,13 +292,14 @@ abstract contract SwarmPrices {
             bytes(_list(from)),
             ". Proposed terms: ",
             bytes(_list(to)),
-            ". At the median Coinbase, Kraken and Binance ETH/USD price over the last 24 hours, do the proposed terms meet all of LARP's guidelines: a 5+ letter name costs between 1 and 5 US dollars, a crew costs between 1 and 5 US dollars, a 1-3 letter name costs at least 10 times a 5+ letter name, a 4 letter name costs at least 2 times a 5+ letter name, and the IMD6900 share is between 0% and 100%? Answer true if all five hold, false otherwise.\",",
+            ". At the median Coinbase, Kraken and Binance ETH/USD price over the last 24 hours, do the proposed terms meet all of LARP's guidelines: a 5+ letter name costs between 1 and 5 US dollars, a crew costs between 1 and 5 US dollars, a 1-3 letter name costs at least 10 times a 5+ letter name, a 4 letter name costs at least 2 times a 5+ letter name, the IMD6900 share is between 0% and 100%, and if the IMD6900 share rises, the IMD6900/$IMD pool can take it: the proposed share of the $IMD that 0.1 ETH buys on IMD\x27s ETH/$IMD pool is at most 2% of the IMD6900/$IMD pool\x27s $IMD depth? Answer true if all six hold, false otherwise.\",",
             '"chainId":',
             bytes(_decimal(block.chainid)),
             ',"window":{"hours":24},"answerType":"bool","evidence":"panel","panelSize":9,"quorum":7,',
             '"validForSeconds":86400,"allowAmbiguous":true,"definitions":{',
             '"guidelines":"LARP keeps names usable for IMD agents (about 1 to 5 US dollars for a 5+ letter name or a crew) and short names costly enough that nobody can cheaply register them all. Every LARP fee is burned as $IMD: the IMD6900 share of it buys IMD6900 on the IMD6900/$IMD pool and burns it, the rest goes to IMD\x27s own burn. If a guideline cannot be checked, answer false.",',
-            '"ETH/USD":"The median of the Coinbase, Kraken and Binance ETH/USD spot prices over the last 24 hours of the window."',
+            '"ETH/USD":"The median of the Coinbase, Kraken and Binance ETH/USD spot prices over the last 24 hours of the window.",',
+            '"IMD6900/$IMD pool\x27s $IMD depth":"The $IMD the Uniswap v4 IMD6900/$IMD pool has in range at its current price (its liquidity times its sqrt price for $IMD as currency1), as the PoolManager holds it at the end of the window. The burner never sells it more than 2% of that in one burn; a share that makes more of 0.1 ETH (the most one burn spends) only sends the excess to IMD\x27s burn, so a rise above it is pointless and a rise within it is what this guideline checks."',
             "}}"
         );
     }

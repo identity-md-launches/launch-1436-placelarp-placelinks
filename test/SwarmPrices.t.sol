@@ -502,7 +502,7 @@ contract SwarmShareTest is Base {
         assertEq(burner.NAMES(), address(names), "the burner knows IMD Names");
         assertEq(names.imd6900ShareBps(), 690);
         assertEq(burner.shareBps(), 690);
-        assertEq(_burn(1000 ether), 1000 ether - 69 ether, "93.1% to IMD's burn");
+        assertEq(_burn(100 ether), 100 ether - 6.9 ether, "93.1% to IMD's burn");
         assertEq(imd.balanceOf(0x000000000000000000000000000000000000dEaD), 0, "nothing parked at 0x..dEaD");
     }
 
@@ -510,9 +510,13 @@ contract SwarmShareTest is Base {
         _set(1380);
         assertEq(names.imd6900ShareBps(), 1380);
         assertEq(burner.shareBps(), 1380);
-        assertEq(_burn(1000 ether), 1000 ether - 138 ether, "86.2% to IMD's burn");
+        assertEq(_burn(100 ether), 100 ether - 13.8 ether, "86.2% to IMD's burn");
     }
 
+    /// @dev The share can reach 100%, but one burn never sells the pair pool more than 2% of its $IMD depth (the
+    /// burner's PAIR_LEG_BPS; L-16): a leg that size is a loss to sandwich through the pair's fee whatever the
+    /// swarm voted, and the rest of the share goes to IMD's burn instead of a searcher. Before L-16 a 1,000 $IMD
+    /// burn at 100% sold all of it into a pool holding ~1,000 $IMD.
     function test_UpToAllOfIt() public {
         _set(1380);
         _set(2760);
@@ -520,8 +524,14 @@ contract SwarmShareTest is Base {
         _set(10_000);
         assertEq(burner.shareBps(), 10_000);
         uint256 supply = imd6900.totalSupply();
-        assertEq(_burn(1000 ether), 0, "all of it bought IMD6900: nothing left for IMD's burn");
+        uint256 room = _pairRoom();
+        assertApproxEqRel(room, 20 ether, 0.01e18, "2% of the pool's ~1,000 $IMD");
+        uint256 pmImd = imd.balanceOf(address(pm));
+        assertEq(_burn(1000 ether), 1000 ether - room, "all of it is the share, but only the pool's room buys IMD6900");
+        assertEq(imd.balanceOf(address(pm)) - pmImd, room, "exactly the room went into the pair pool");
         assertLt(imd6900.totalSupply(), supply, "and the IMD6900 was burned");
+        // a burn the pool can take whole at 100% is all IMD6900
+        assertEq(_burn(10 ether), 0, "under the room, all of it bought IMD6900: nothing left for IMD's burn");
     }
 
     function test_AndDownToNothing() public {
@@ -561,6 +571,17 @@ contract SwarmShareTest is Base {
         assertTrue(_contains(string(body), "IMD6900 share 6.9%"), "the current share");
         assertTrue(_contains(string(body), "IMD6900 share 13.8%"), "the proposed share");
         assertTrue(_contains(string(body), "the IMD6900 share is between 0% and 100%"), "the guideline");
+        // L-16: a rising share has a criterion of its own, the pair pool's depth, not only the bounds the contract
+        // already enforces
+        assertTrue(
+            _contains(
+                string(body),
+                "if the IMD6900 share rises, the IMD6900/$IMD pool can take it: the proposed share of the $IMD that 0.1 ETH buys on IMD's ETH/$IMD pool is at most 2% of the IMD6900/$IMD pool's $IMD depth"
+            ),
+            "the share's criterion"
+        );
+        assertTrue(_contains(string(body), "Answer true if all six hold"), "six guidelines");
+        assertTrue(_contains(string(body), "\"IMD6900/$IMD pool's $IMD depth\":\""), "the depth is defined");
     }
 
     function test_TheBurnerFallsBackTo6Point9() public {

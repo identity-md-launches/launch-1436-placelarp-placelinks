@@ -10,6 +10,9 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 import {LARPBurner} from "../src/LARPBurner.sol";
 import {MockIMD, MockIMD6900, LiquidityAdder} from "./Base.sol";
@@ -218,7 +221,8 @@ contract BurnerHandler is Test {
         uint256 pmImd = imd.balanceOf(address(pm));
         uint256 supply = imd6900.totalSupply();
         (uint256 expectSpend,) = _modelSpend(value, waitingBefore);
-        bool legRuns = expectSpend != 0 || held * burner.POOL_SHARE_BPS() / 10_000 != 0;
+        uint256 room = _pairRoom();
+        bool legRuns = expectSpend != 0 || _share(held, room) != 0;
 
         vm.prank(caller);
         (bool ok, bytes memory err) =
@@ -235,7 +239,7 @@ contract BurnerHandler is Test {
         assertTrue(ok, "with no leg to run, no budget is needed");
         ++burns;
         ethIn += value; // value is 0 here, or the model would have a leg to run
-        _afterImdBurn(held, pmImd, supply);
+        _afterImdBurn(held, pmImd, supply, room);
     }
 
     function burnImd(uint256 who) external {
@@ -243,9 +247,29 @@ contract BurnerHandler is Test {
         uint256 pmImd = imd.balanceOf(address(pm));
         uint256 held = imd.balanceOf(address(burner));
         uint256 supply = imd6900.totalSupply();
+        uint256 room = _pairRoom();
         vm.prank(caller);
         burner.burnImd();
-        _afterImdBurn(held, pmImd, supply);
+        _afterImdBurn(held, pmImd, supply, room);
+    }
+
+    /// @dev The most $IMD one burn sells into the pair pool, as the burner caps it (PAIR_LEG_BPS, AUDIT.md L-16): 2% of
+    /// the pool's virtual $IMD reserve at its price, read from the PoolManager before the call (the ETH legs don't
+    /// touch the pair pool, so this is the state the pair leg sees).
+    function _pairRoom() internal view returns (uint256) {
+        (uint160 sqrtPrice,,,) = StateLibrary.getSlot0(IPoolManager(address(pm)), PoolIdLibrary.toId(pair));
+        uint128 liquidity = StateLibrary.getLiquidity(IPoolManager(address(pm)), PoolIdLibrary.toId(pair));
+        if (sqrtPrice == 0 || liquidity == 0) return 0;
+        uint256 reserve = Currency.unwrap(pair.currency0) == address(imd)
+            ? FullMath.mulDiv(liquidity, 1 << 96, sqrtPrice)
+            : FullMath.mulDiv(liquidity, sqrtPrice, 1 << 96);
+        return reserve * 200 / 10_000;
+    }
+
+    /// @dev What the pair leg sells of `held` $IMD: the share (6.9% here: the burner has no IMD Names), up to the room.
+    function _share(uint256 held, uint256 room) internal view returns (uint256 share) {
+        share = held * burner.POOL_SHARE_BPS() / 10_000;
+        if (share > room) share = room;
     }
 
     /// @dev Sells ETH into POOL4 (pushing its price down, possibly out of its range) or buys it back. A trade the pool
@@ -282,6 +306,7 @@ contract BurnerHandler is Test {
         uint256 held = imd.balanceOf(address(burner));
         uint256 supply = imd6900.totalSupply();
         (uint256 expectSpend, uint256 fromWaiting) = _modelSpend(value, waitingBefore);
+        uint256 room = _pairRoom();
 
         vm.recordLogs();
         vm.prank(caller);
@@ -333,16 +358,18 @@ contract BurnerHandler is Test {
                 if (route == 1) ++fellBack;
             }
         }
-        _afterImdBurn(held + bought, pmImd - bought, supply);
+        _afterImdBurn(held + bought, pmImd - bought, supply, room);
     }
 
-    /// @dev After any burn: nothing stays, the IMD6900 share is 6.9% or nothing, and the rest is at IMD_BURN.
-    function _afterImdBurn(uint256 held, uint256 pmImdBefore, uint256 supplyBefore) internal {
+    /// @dev After any burn: nothing stays, the IMD6900 share is 6.9% (up to the pair pool's room) or nothing, and the
+    /// rest is at IMD_BURN.
+    function _afterImdBurn(uint256 held, uint256 pmImdBefore, uint256 supplyBefore, uint256 room) internal {
         assertEq(imd.balanceOf(address(burner)), 0, "no $IMD stays in the burner");
         assertEq(imd6900.balanceOf(address(burner)), 0, "no IMD6900 stays in the burner");
         uint256 spent = imd.balanceOf(address(pm)) - pmImdBefore;
-        uint256 share = held * burner.POOL_SHARE_BPS() / 10_000;
-        assertTrue(spent == 0 || spent == share, "the IMD6900 leg takes exactly the share or nothing");
+        uint256 share = _share(held, room);
+        assertTrue(spent == 0 || spent == share, "the IMD6900 leg takes exactly the share (up to the room) or nothing");
+        assertLe(spent, room, "the IMD6900 leg never sells the pair pool more than 2% of its $IMD depth");
         uint256 burned6900 = supplyBefore - imd6900.totalSupply();
         assertTrue((spent == 0) == (burned6900 == 0), "IMD6900 burns exactly when the share was spent");
         imdToPm += spent;

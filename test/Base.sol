@@ -11,6 +11,9 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 import {LARP} from "../src/LARP.sol";
 import {ILARP} from "../src/ILARP.sol";
@@ -278,6 +281,23 @@ abstract contract Base is Test {
 
     function _fillPair() internal {
         adder.add(pair, 1e23);
+    }
+
+    /// @dev The most $IMD one burn sells into a pair pool, as the burner caps it (PAIR_LEG_BPS): 2% of the pool's
+    /// virtual $IMD reserve at its price (liquidity / sqrtPrice with $IMD as currency0, liquidity * sqrtPrice as
+    /// currency1), 0 for an empty pool. Computed independently from the PoolManager's state.
+    function _pairRoomOf(V4PoolKey memory key) internal view returns (uint256) {
+        (uint160 sqrtPrice,,,) = StateLibrary.getSlot0(IPoolManager(address(pm)), PoolIdLibrary.toId(key));
+        uint128 liquidity = StateLibrary.getLiquidity(IPoolManager(address(pm)), PoolIdLibrary.toId(key));
+        if (sqrtPrice == 0 || liquidity == 0) return 0;
+        uint256 reserve = Currency.unwrap(key.currency0) == address(imd)
+            ? FullMath.mulDiv(liquidity, 1 << 96, sqrtPrice)
+            : FullMath.mulDiv(liquidity, sqrtPrice, 1 << 96);
+        return reserve * 200 / 10_000;
+    }
+
+    function _pairRoom() internal view returns (uint256) {
+        return _pairRoomOf(pair);
     }
 
     function _fillPool4() internal {

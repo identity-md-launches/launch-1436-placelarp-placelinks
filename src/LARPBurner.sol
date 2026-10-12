@@ -44,7 +44,9 @@ interface IShareSource {
 /// - Of the $IMD, a share the IMD swarm votes (IMD Names' `imd6900ShareBps`: 6.9% at launch, anywhere from 0 to 100%)
 ///   buys IMD6900 on the IMD6900/$IMD pool, buying pressure, and that IMD6900 is burned (its supply shrinks). The rest
 ///   goes to IMD's own burn, its BurnExecutor (IMD_BURN), which anyone can send on to Base, where it is burned out of
-///   $IMD's supply. If the IMD6900 buy can't happen, that share goes to IMD's burn too.
+///   $IMD's supply. If the IMD6900 buy can't happen, that share goes to IMD's burn too. One call sells the pool at most
+///   2% of its own $IMD depth (PAIR_LEG_BPS): a leg that small is a loss to sandwich through the pair's fee, whatever
+///   the swarm's share; what the share makes above it goes to IMD's burn.
 /// @dev No owner, no roles, no upgrades. At most MAX_BURN of ETH is spent per call, and of the ETH that was already
 /// waiting here at most MAX_BURN leaves per block, however many calls: small trades aren't worth sandwiching against
 /// these pools' fees, and a batch of calls in one transaction can't make a big one. Royalties a market paid in WETH
@@ -73,6 +75,14 @@ contract LARPBurner {
     uint256 public constant POOL_SHARE_BPS = 690;
     /// @notice The most the swarm's share can be: all of it.
     uint256 public constant MAX_SHARE_BPS = 10_000;
+    /// @dev The most $IMD one call sells into the IMD6900/$IMD pool, as a share of the pool's own $IMD depth (the
+    /// virtual $IMD reserve its liquidity and price make, read from the PoolManager): 2%, so the leg moves the pool's
+    /// price by about that much, which the pair's 6.9% fee each way makes a loss to sandwich at any swarm share (the
+    /// break-even is near 10%). What the share makes above it goes to IMD's burn, as a failed leg's share does. At
+    /// launch the pool holds ~125 $IMD and MAX_BURN buys ~25, so 6.9% of a full burn (1.7 $IMD) fits under the cap
+    /// (2.5 $IMD); the swarm raising the share above what the pool can take sends the excess to IMD's burn, never to
+    /// a searcher.
+    uint256 internal constant PAIR_LEG_BPS = 200;
     /// @dev The gas IMD Names' share read gets: a storage read, with room.
     uint256 internal constant SHARE_GAS = 30_000;
     /// @dev v4-core TickMath.MIN_SQRT_PRICE + 1 and MAX_SQRT_PRICE - 1: trade as far as the pool goes.
@@ -193,13 +203,15 @@ contract LARPBurner {
     receive() external payable {}
 
     /// @notice Spends the ETH here (with what is sent), up to MAX_BURN, on $IMD (POOL4, else the hookless pool), then
-    /// burns all the $IMD here (6.9% through IMD6900). Reverts if the ETH bought less than `minImd`; with no route,
-    /// the ETH waits and this reverts only if `minImd` is set.
+    /// burns all the $IMD here (the swarm's share through IMD6900). Reverts if the sender's own ETH bought less than
+    /// `minImd`; with no route, the ETH waits and this reverts only if `minImd` is set.
     /// @dev What is sent goes first, up to MAX_BURN; the rest of the call's cap comes from the ETH that was already
     /// waiting here (fees above the cap, royalties, parked fees), of which at most MAX_BURN leaves per block, so a
-    /// batch of calls in one transaction sells no more than one call would. `minImd` is checked against what this
-    /// call bought: with a fee above MAX_BURN, that is the first MAX_BURN of it. Needs a gas limit of about 3.4M
-    /// (LEG_GAS for the POOL4 leg and again for the IMD6900 leg, sequentially); less is refused, never degraded.
+    /// batch of calls in one transaction sells no more than one call would. `minImd` is checked against the sender's
+    /// own part of what this call bought (its share of the one sale, pro rata: the ETH already waiting can't make up
+    /// for a fee sold at a bad price); with a fee above MAX_BURN, that is the first MAX_BURN of it. A call that sends
+    /// nothing checks `minImd` against the whole sale. Needs a gas limit of about 3.4M (LEG_GAS for the POOL4 leg and
+    /// again for the IMD6900 leg, sequentially); less is refused, never degraded.
     function burn(uint256 minImd) external payable locked returns (uint256 imd) {
         _unwrapWeth();
         uint256 own = msg.value < MAX_BURN ? msg.value : MAX_BURN;
@@ -227,7 +239,9 @@ contract LARPBurner {
             }
             if (imd == 0) emit Parked(eth);
         }
-        if (imd < minImd) revert TooLittleIMD();
+        // the floor is the sender's: its own ETH's part of the sale, not what the waiting ETH bought alongside
+        uint256 mine = own == 0 ? imd : imd * own / eth;
+        if (mine < minImd) revert TooLittleIMD();
         _burnImd();
     }
 
@@ -253,10 +267,7 @@ contract LARPBurner {
         if (msg.sender != address(POOL_MANAGER)) revert NotPoolManager();
         (uint8 route, uint256 amount) = abi.decode(data, (uint8, uint256));
         if (route == TO_PAIR) {
-            bool imdIs0 = IMD < IMD6900;
-            PoolKey memory pair = imdIs0
-                ? PoolKey(IMD, IMD6900, PAIR_FEE, PAIR_SPACING, PAIR_HOOK)
-                : PoolKey(IMD6900, IMD, PAIR_FEE, PAIR_SPACING, PAIR_HOOK);
+            (PoolKey memory pair, bool imdIs0) = _pairKey();
             int256 delta = POOL_MANAGER.swap(
                 pair, SwapParams(imdIs0, -int256(amount), imdIs0 ? MIN_PRICE_LIMIT : MAX_PRICE_LIMIT), ""
             );
@@ -285,12 +296,14 @@ contract LARPBurner {
         return abi.encode(uint256(uint128(bought)));
     }
 
-    /// @dev The swarm's share of the $IMD here buys IMD6900 (burned) if the pair pool takes it; everything left goes
-    /// to IMD's burn.
+    /// @dev The swarm's share of the $IMD here, up to PAIR_LEG_BPS of the pair pool's $IMD depth, buys IMD6900 (burned)
+    /// if the pair pool takes it; everything left goes to IMD's burn.
     function _burnImd() internal {
         uint256 held = _imdHeld();
         if (held == 0) return;
         uint256 share = held * shareBps() / 10_000;
+        uint256 room = _pairRoom();
+        if (share > room) share = room;
         uint256 burned6900;
         if (share != 0) {
             (bool ok, bytes memory result) = _tryUnlock(TO_PAIR, share);
@@ -344,11 +357,38 @@ contract LARPBurner {
 
     /// @dev `eth` in $IMD at a pool's spot price, or 0 if the pool has no price or no liquidity in range.
     function _spot(PoolKey memory key, uint256 eth) internal view returns (uint256) {
-        bytes32 state = keccak256(abi.encode(keccak256(abi.encode(key)), uint256(6))); // PoolManager pools slot
-        uint160 sqrtPrice = uint160(uint256(POOL_MANAGER.extsload(state)));
-        uint128 liquidity = uint128(uint256(POOL_MANAGER.extsload(bytes32(uint256(state) + 3))));
+        (uint160 sqrtPrice, uint128 liquidity) = _state(key);
         if (sqrtPrice == 0 || liquidity == 0) return 0;
         return FullMath.mulDiv(FullMath.mulDiv(eth, sqrtPrice, 1 << 96), sqrtPrice, 1 << 96);
+    }
+
+    /// @dev The IMD6900/$IMD pool's key, and whether $IMD is its currency0.
+    function _pairKey() internal view returns (PoolKey memory pair, bool imdIs0) {
+        imdIs0 = IMD < IMD6900;
+        pair = imdIs0
+            ? PoolKey(IMD, IMD6900, PAIR_FEE, PAIR_SPACING, PAIR_HOOK)
+            : PoolKey(IMD6900, IMD, PAIR_FEE, PAIR_SPACING, PAIR_HOOK);
+    }
+
+    /// @dev The most $IMD one call sells into the pair pool: PAIR_LEG_BPS of the pool's virtual $IMD reserve at its
+    /// current price (liquidity / sqrtPrice for a currency0, liquidity * sqrtPrice for a currency1: what its curve has
+    /// in range, so the leg moves the price by about PAIR_LEG_BPS). 0 when the pool has no price or no liquidity, so
+    /// the leg isn't tried and the share goes to IMD's burn.
+    function _pairRoom() internal view returns (uint256) {
+        (PoolKey memory pair, bool imdIs0) = _pairKey();
+        (uint160 sqrtPrice, uint128 liquidity) = _state(pair);
+        if (sqrtPrice == 0 || liquidity == 0) return 0;
+        uint256 reserve =
+            imdIs0 ? FullMath.mulDiv(liquidity, 1 << 96, sqrtPrice) : FullMath.mulDiv(liquidity, sqrtPrice, 1 << 96);
+        return reserve * PAIR_LEG_BPS / 10_000;
+    }
+
+    /// @dev A pool's price and liquidity in range, from the PoolManager's storage (pools slot 6: Slot0, then
+    /// feeGrowthGlobal0 and 1, then liquidity).
+    function _state(PoolKey memory key) internal view returns (uint160 sqrtPrice, uint128 liquidity) {
+        bytes32 state = keccak256(abi.encode(keccak256(abi.encode(key)), uint256(6)));
+        sqrtPrice = uint160(uint256(POOL_MANAGER.extsload(state)));
+        liquidity = uint128(uint256(POOL_MANAGER.extsload(bytes32(uint256(state) + 3))));
     }
 
     function _imdHeld() internal view returns (uint256 held) {

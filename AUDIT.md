@@ -6,10 +6,12 @@ Scope: `src/` at this commit: `LARPBurner`, `LARP` / `ILARP`, `IMDNames` / `IIMD
 - The one role is the names' **artist**, who can change only the art (tokenURI's renderer) and can lock it forever.
 
 **Adaptation review:** the supplied audit's native-settlement issue (medium, L-14) and cross-proposal verdict issue
-(low, L-15) reproduced and are fixed below. Existing fixes L-01, L-02 and L-09–L-11 remain in place. See
-`ADAPTATION.md` for current command results and `AUDIT-COVERAGE.md` for every entry-point answer. The current suite
-contains 290 tests: 277 pass offline and 13 require a mainnet RPC and explicitly skip without it. Earlier fork
-observations below are historical; live dependencies were not revalidated in this adaptation.
+(low, L-15) reproduced and are fixed below. The independent review's reopened findings, the uncapped IMD6900 leg at a
+high share (medium, L-16) and a payer's `minImd` met by the waiting ETH (low, L-17), reproduced and are fixed below.
+Existing fixes L-01, L-02 and L-09–L-11 remain in place. See `ADAPTATION.md` for current command results and
+`AUDIT-COVERAGE.md` for every entry-point answer. The current suite contains 296 tests: 283 pass offline and 13
+require a mainnet RPC and explicitly skip without it. The 13 fork tests passed against a public Ethereum RPC on
+2026-10-12 (block ~26,178,000), with the capped leg buying and burning real IMD6900.
 
 ## Trust: what LARP depends on, and what happens if it fails
 
@@ -19,7 +21,7 @@ observations below are historical; live dependencies were not revalidated in thi
 | Uniswap v4 PoolManager | nobody (immutable) | — |
 | POOL4 (ETH/$IMD 1%, hook `0xc6C9…`) | IMD's treasury owns the hook (it can `closeMarket`) | the burner falls to the hookless route (route 1); a hostile hook can consume its entire 3M budget on every ETH-paid call before fallback (L-09) |
 | hookless ETH/$IMD pool (1%, spacing 200) | nobody (no hook); its LPs can withdraw | the ETH waits in the burner; anyone burns it later |
-| IMD6900/$IMD pool (hook `0x667f…2A44`) | the IMD6900 ETH timelock owns the hook | the swarm-voted share (initially 6.9%) goes to IMD_BURN as $IMD instead; a hostile pair hook can consume the pair leg's 3M budget on every paid call |
+| IMD6900/$IMD pool (hook `0x667f…2A44`) | the IMD6900 ETH timelock owns the hook | the swarm-voted share (initially 6.9%) goes to IMD_BURN as $IMD instead; a hostile pair hook can consume the pair leg's 3M budget on every paid call. One call sells the pool at most 2% of its $IMD depth (L-16), sized against the hook's 6.9% fee each way: if the hook's owner lowered that fee below ~1%, a leg at the cap would become worth sandwiching again, and the share should be voted down |
 | IMD6900 (`0x0000198C…`, upgradeable) | the IMD6900 ETH timelock | if its `burn` refuses, or eats all the gas it is given (a hostile or buggy upgrade), the share goes to IMD_BURN as $IMD; the leg can consume its 3M budget on every paid call. With both budgeted legs hostile, allow roughly 6M plus overhead and estimate gas afresh (L-09) |
 | WETH9 (`0xC02a…6Cc2`, immutable) | nobody | royalties paid in WETH are unwrapped on each `burn`; if WETH refused, they would wait there |
 | $IMD (LayerZero OFT, owner `0x047F…`) | IMD's treasury (peers) | $IMD is forwarded to IMD's BurnExecutor, whose owner can rescue or redirect it; bridging/burning depends on IMD's system |
@@ -138,8 +140,11 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
   - **How it was validated:** the contract writes the whole question, and IMD's free quote accepted it (status
     `quoted`). Proposing costs the proposer 0.5 IMD, which IMD's Intake forwards to IMD's treasury.
 - **I-11 The IMD6900 buy is small and bounded.**
-  - **Size:** it is 6.9% of at most 0.1 ETH of $IMD per burn, against the pair pool's 6.9% fee each way, so it isn't
-    worth sandwiching.
+  - **Size:** at most 2% of the pair pool's own $IMD depth per call (`PAIR_LEG_BPS`, L-16), whatever the swarm's
+    share, against the pair pool's 6.9% fee each way, so it isn't worth sandwiching (the break-even is a leg near 10%
+    of the depth). At launch that is ~2.5 $IMD against a 6.9% share of a full `MAX_BURN` burn of ~1.7 $IMD, so the
+    launch share is never clipped; the rest of a larger share goes to IMD's burn. Before L-16 the bound was only the
+    share itself, which v2 lets the swarm raise to 100%.
   - **Where its fee goes:** the pair hook keeps its own 6.9% fee as protocol liquidity.
   - **If it fails:** an empty pair pool, a hook that refuses, an IMD6900 that won't burn, or one that eats all the
     gas it is given, all send the share to IMD_BURN (`test_AnEmptyPairPoolMeansItAllBurnsAsIMD`,
@@ -149,7 +154,8 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
   price (burned). The site should send registrations through a private mempool.
 - **L-04 Sandwiching a burn.** At most `MAX_BURN` (0.1 ETH) is spent per call, and at most `MAX_BURN` of the ETH
   that was already waiting leaves per block however many calls (L-10), below POOL4's ~0.24 ETH sandwich break-even,
-  and far below the hookless pool's (23x POOL4's liquidity). Callers can set `minImd`; the site should pass a quote.
+  and far below the hookless pool's (23x POOL4's liquidity). Callers can set `minImd`, which floors the payer's own
+  part of the sale (L-17), so a quote for the fee is a real floor even when ETH is waiting; the site should pass one.
 - **L-12 A proposal that changes nothing (or 1 wei) consumes the week.** `_checkStep` allows `to == from`, so anyone
   can propose the current prices; the swarm judges guideline compliance, which they meet, and `execute` then bumps
   the epoch and restarts the cooldown: every other approved proposal is `Stale`, and a real change waits a week. Cost
@@ -231,14 +237,14 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
 
 - **The IMD6900 share is swarm-voted** (IMD Names' `SwarmPrices`, with the prices: 6.9% to start, 0-100%, at most 2x or
   one point per change, one change a week). The burner reads it with a 30k-gas staticcall and falls back to 6.9% if IMD
-  Names is missing, reverts, eats the gas or answers more than 100% (`test_TheBurnerFallsBackTo6Point9`). At 100% nothing
-  reaches IMD's burn unless the IMD6900 buy fails; at 0% nothing buys IMD6900 (`test_UpToAllOfIt`,
-  `test_AndDownToNothing`).
+  Names is missing, reverts, eats the gas or answers more than 100% (`test_TheBurnerFallsBackTo6Point9`). At 100% all
+  of a burn is the share, but one call sells the pair pool at most 2% of its $IMD depth and the rest reaches IMD's burn
+  (L-16); at 0% nothing buys IMD6900 (`test_UpToAllOfIt`, `test_AndDownToNothing`).
 - **$IMD goes to IMD's BurnExecutor**, not `0x…dEaD` (above). The trust table uses the v2 beneficiary.
 - **Placement by CREATE3** (README, v2): no IMD protocol address is a launch constructor argument; a salt used first is
   never taken (`test_ASaltUsedFirstIsNeverTaken`); a chain without CreateX gets the placements' own CREATE3
   (`test_DeploysOnAFreshChain`).
-- **Tests:** 290 total, with the current offline/fork split recorded above. Fork checks cover the real CreateX and
+- **Tests:** 296 total, with the current offline/fork split recorded above. Fork checks cover the real CreateX and
   a name burning the canonical way when an RPC is supplied. The fuzz seed remains fixed at `0x6900` in foundry.toml.
 
 
@@ -266,6 +272,45 @@ Governance tests now sign their actual proposal IDs. The published signature vec
 the test Intake returns that vector's fixed request ID. Regressions cover replay across pending proposals with
 different prices/share, arbitrary mismatched IDs, tampering, valid retry, and one-time settlement. Weak/expired/wrong-chain
 verdict behavior and the weekly guardrails remain unchanged.
+
+### L-16 The IMD6900 leg sold the whole share into the pair pool at any price (medium; reopened review)
+
+Reproduced the reviewer's proof (`Proof_22bc735e0861`): a hookless 6.9%-fee pair at 10,000 IMD6900 per $IMD with
+~1,000 $IMD of virtual reserve, the share at 10,000 bps (what four approved proposals reach: 690 → 1380 → 2760 →
+5520 → 10,000, `test_UpToAllOfIt`), 0.1 ETH waiting in the burner. An attacker that buys IMD6900 with 500 $IMD, calls
+`burn(0)` (0.1 ETH → ~198 $IMD, all of it sold into the pair) and sells back ended +40.6 $IMD. `_burnImd` sold
+`held * shareBps() / 10_000` in one exact-input swap to the price limit with no size bound; `MAX_BURN` never applied
+on the $IMD path, and the swarm's question only asked whether the share is between 0% and 100%, which `_checkBounds`
+already enforces, so one proposer could set it.
+
+**Fix:** `_burnImd` sells the pair pool at most `PAIR_LEG_BPS` (2%) of the pool's own $IMD depth per call: its
+virtual $IMD reserve from the liquidity and price the PoolManager holds (`_pairRoom`, read with the same `extsload`
+as `quoteImd`), so the leg moves the price by about 2%, far under the ~10% at which a sandwich through the pair's
+6.9% fee each way breaks even. What the share makes above the room goes to IMD_BURN, as a failed leg's share does.
+The cap scales with the pool: a front-run that deepens the $IMD side raises it only in proportion; a pool with no
+liquidity has no room and the leg is not tried. On Ethereum today (block ~26,178,000) the pool holds ~125 $IMD and
+0.1 ETH buys ~25, so 6.9% of a full burn (~1.7 $IMD) fits under the cap (~2.5 $IMD): the launch design is unchanged,
+and the fork test still buys and burns real IMD6900. A constant in $IMD was rejected: the pool's depth and $IMD's
+price move, and a constant would either clip the launch share or stop binding. The swarm's question gains a sixth
+guideline for a rising share: the proposed share of what 0.1 ETH buys must be at most 2% of the pair pool's $IMD
+depth (defined in the body), so raising the share has a criterion the panel judges, and a rise the pool can't take
+is refused rather than pointlessly approved; lowering the share and price-only proposals are unaffected. The step
+rule, bounds and cooldown are unchanged. **Tests:** `test/LARPBurnerPairLeg.t.sol` (the sandwich loses at 100%,
+at 6.9% and with a small front-run on a 6.9%-fee pair; a full burn at 100% sells exactly the room and the rest
+reaches IMD_BURN; the launch share of a full burn is not clipped; the room follows the depth, none for an empty
+pool), `test_UpToAllOfIt` (changed: at 100% a 1,000 $IMD burn sells the room and the rest reaches IMD's burn),
+`testFuzz_SixPointNinePercentBuysIMD6900AndTheRestBurns` and the burner invariant (the leg takes exactly
+min(share, room) or nothing), `test_TheQuestionNamesTheShare` (the new guideline and definition). The reviewer's
+proof passes.
+
+### L-17 A payer's `minImd` was met by the ETH already waiting (low; reopened review)
+
+Reproduced: with 0.0993 ETH of royalties waiting, `register{value: 0.00069 ether}(…, minImd = 5 × quote)` went
+through, because `burn` sold the fee and the waiting ETH together (0.1 ETH → ~198 $IMD) and compared `minImd` with
+the whole. **Fix:** `burn` checks `minImd` against the sender's pro-rata part of the sale, `imd * own / eth`; a call
+that sends nothing (a keeper's `burn(min)`) still floors the whole sale. `register`, `link` and `foundCrew` floors are
+now the payer's own, as `IIMDNames` promises. **Tests:** `test_MinImdIsCheckedAgainstThePayersOwnFee`,
+`test_BurnFloorsTheSendersPartOrTheWholeSaleWhenItSendsNothing`; both failed on the old check.
 
 ## Placement publication and coverage
 
