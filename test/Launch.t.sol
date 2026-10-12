@@ -21,7 +21,7 @@ contract LaunchTest is Test {
     address constant IMD6900 = 0x0000198C940D8cD70Cb9ACeC5E3af8216ac57d2F;
     address constant PAIR_HOOK = 0x667f4621030aCfAfb1bD0B64d33610A8567f2A44;
 
-    function _burnerArgs() internal pure returns (bytes memory) {
+    function _burnerArgs(address names) internal pure returns (bytes memory) {
         return abi.encode(
             POOL_MANAGER,
             IMD,
@@ -33,12 +33,26 @@ contract LaunchTest is Test {
             IMD6900,
             uint24(0),
             uint24(60),
-            PAIR_HOOK
+            PAIR_HOOK,
+            names
         );
     }
 
     function _launch() internal returns (LARPBurner burner, LARP larp, IMDNames names, LARPLinks links) {
-        burner = new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, POOL4_HOOK, 10_000, 200, IMD6900, 0, 60, PAIR_HOOK, vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2));
+        burner = new LARPBurner(
+            POOL_MANAGER,
+            IMD,
+            10_000,
+            60,
+            POOL4_HOOK,
+            10_000,
+            200,
+            IMD6900,
+            0,
+            60,
+            PAIR_HOOK,
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2)
+        );
         larp = new LARP(IDENTITY);
         names = new IMDNames(IDENTITY, larp, address(burner), ARTIST, INTAKE, ORACLE_SIGNER);
         links = new LARPLinks(IDENTITY, LAUNCHER, larp, names, address(burner));
@@ -95,7 +109,7 @@ contract LaunchTest is Test {
 
     function test_PassesTheAdmissionScan() public {
         (LARPBurner burner, LARP larp, IMDNames names, LARPLinks links) = _launch();
-        _scan(bytes.concat(type(LARPBurner).creationCode, _burnerArgs()), "LARPBurner creation code");
+        _scan(bytes.concat(type(LARPBurner).creationCode, _burnerArgs(address(names))), "LARPBurner creation code");
         _scan(bytes.concat(type(LARP).creationCode, abi.encode(IDENTITY)), "LARP creation code");
         _scan(
             bytes.concat(
