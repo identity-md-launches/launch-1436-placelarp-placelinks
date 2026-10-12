@@ -21,6 +21,10 @@ remappings = [
     "solady/=lib/solady/src/",
 ]
 
+[fuzz]
+# one seed: every run, here and in IMD's builds, draws the same cases
+seed = "0x6900"
+
 [invariant]
 runs = 128
 depth = 64

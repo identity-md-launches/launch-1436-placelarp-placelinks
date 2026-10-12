@@ -29,7 +29,7 @@ contract MainnetForkTest is Test {
     address constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
     address constant IMD = 0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7;
     address constant POOL4_HOOK = 0xc6C965Bd164c483e87d0B550671798e9A3602840;
-    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant IMD_BURN = 0xe29386719C155B6847aD5a4E97C6674f10ffc750; // IMD's burn, its BurnExecutor: where LARP's $IMD goes
     address constant ARTIST = 0x35dA9C0303507ddf708E87F2568EdDf12c47a059;
     address constant INTAKE = 0xa43e6F75ee006411F79Ac1C84120606C2330DE82;
     address constant ORACLE_SIGNER = 0x5598Aa9146215Bc13eb26f2c692Ad1461Fd32982;
@@ -49,7 +49,7 @@ contract MainnetForkTest is Test {
         string memory rpc = vm.envOr("MAINNET_RPC_URL", string(""));
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
-        burner = new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, POOL4_HOOK, 10_000, 200, TREASURY, 0, 60, PAIR_HOOK);
+        burner = new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, POOL4_HOOK, 10_000, 200, TREASURY, 0, 60, PAIR_HOOK, vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2));
         larp = new LARP(IDENTITY);
         names = new IMDNames(IDENTITY, larp, address(burner), ARTIST, INTAKE, ORACLE_SIGNER);
         links = new LARPLinks(IDENTITY, LAUNCHER, larp, names, address(burner));
@@ -91,7 +91,7 @@ contract MainnetForkTest is Test {
     event Bought(uint256 eth, uint256 imd, uint8 route);
 
     function test_ANameBuysRealIMDOnPool4AndBurnsIt() public forked {
-        uint256 before = IERC20Like(IMD).balanceOf(DEAD);
+        uint256 before = IERC20Like(IMD).balanceOf(IMD_BURN);
         uint256 supply6900 = IERC20Like(TREASURY).totalSupply();
         uint256 pairFees = IERC20Like(TREASURY).balanceOf(PAIR_HOOK);
         vm.deal(TREASURY, 1 ether);
@@ -99,7 +99,7 @@ contract MainnetForkTest is Test {
         emit Bought(0.00069 ether, 0, 0); // route 0: POOL4
         vm.prank(TREASURY);
         uint256 id = names.register{value: 0.00069 ether}(_label("imd6900"), TREASURY, 0);
-        uint256 burned = IERC20Like(IMD).balanceOf(DEAD) - before;
+        uint256 burned = IERC20Like(IMD).balanceOf(IMD_BURN) - before;
         uint256 burned6900 = supply6900 - IERC20Like(TREASURY).totalSupply();
         emit log_named_decimal_uint("IMD bought on POOL4 and sent to 0x..dEaD (93.1%)", burned, 18);
         emit log_named_decimal_uint(
@@ -125,14 +125,14 @@ contract MainnetForkTest is Test {
     /// exist).
     function test_TheHooklessPoolTakesWhatPool4Cant() public forked {
         LARPBurner b =
-            new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, address(0x1234), 10_000, 200, TREASURY, 0, 60, PAIR_HOOK);
-        uint256 before = IERC20Like(IMD).balanceOf(DEAD);
+            new LARPBurner(POOL_MANAGER, IMD, 10_000, 60, address(0x1234), 10_000, 200, TREASURY, 0, 60, PAIR_HOOK, vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2));
+        uint256 before = IERC20Like(IMD).balanceOf(IMD_BURN);
         vm.expectEmit(true, false, true, false, address(b));
         emit Bought(0.05 ether, 0, 1); // route 1
         uint256 got = b.burn{value: 0.05 ether}(0);
         emit log_named_decimal_uint("IMD bought on the hookless pool for 0.05 ETH", got, 18);
         assertGt(got, 0);
-        assertEq(IERC20Like(IMD).balanceOf(DEAD) - before, got - got * 690 / 10_000, "93.1% to 0x..dEaD");
+        assertEq(IERC20Like(IMD).balanceOf(IMD_BURN) - before, got - got * 690 / 10_000, "93.1% to 0x..dEaD");
     }
 
     /// @dev Paying in real $IMD at the two real pools' quote.
@@ -152,11 +152,11 @@ contract MainnetForkTest is Test {
     }
 
     function test_ACrewBuysAndBurnsRealIMD() public forked {
-        uint256 before = IERC20Like(IMD).balanceOf(DEAD);
+        uint256 before = IERC20Like(IMD).balanceOf(IMD_BURN);
         vm.deal(TREASURY, 1 ether);
         vm.prank(TREASURY);
         links.foundCrew{value: 0.00069 ether}(806, _label("imd6900-frens"), true, 0);
-        assertGt(IERC20Like(IMD).balanceOf(DEAD), before);
+        assertGt(IERC20Like(IMD).balanceOf(IMD_BURN), before);
         assertEq(links.crewOf(806), 1);
     }
 
@@ -171,11 +171,11 @@ contract MainnetForkTest is Test {
         IERC721Like(IDENTITY).transferFrom(TREASURY, buyer, 806);
         vm.stopPrank();
         assertEq(names.tollOf(id), 0.00069 ether);
-        uint256 before = IERC20Like(IMD).balanceOf(DEAD);
+        uint256 before = IERC20Like(IMD).balanceOf(IMD_BURN);
         vm.deal(buyer, 1 ether);
         vm.prank(buyer);
         names.link{value: 0.00069 ether}(id, 806, 0);
-        assertGt(IERC20Like(IMD).balanceOf(DEAD), before, "the toll was burned");
+        assertGt(IERC20Like(IMD).balanceOf(IMD_BURN), before, "the toll was burned");
         assertEq(names.nameOf(806), "imd6900.imd");
     }
 
@@ -205,7 +205,7 @@ contract MainnetForkTest is Test {
         uint256 paid = IERC20Like(IMD).balanceOf(payTo);
         vm.startPrank(proposer);
         IERC20Like(IMD).approve(address(n), 0.5 ether);
-        bytes32 id = n.propose(SwarmPrices.Prices(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether), 0.5 ether);
+        bytes32 id = n.propose(SwarmPrices.Prices(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether, 1380), 0.5 ether);
         vm.stopPrank();
         assertEq(IERC20Like(IMD).balanceOf(payTo) - paid, 0.5 ether, "IMD's oracle was paid through its Intake");
 

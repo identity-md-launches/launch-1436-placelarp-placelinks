@@ -112,12 +112,12 @@ contract LARPLinksTest is Base {
     }
 
     function test_FoundingACrewBurnsIMD() public {
-        uint256 before = imd.balanceOf(DEAD);
+        uint256 before = imd.balanceOf(IMD_BURN);
         vm.expectEmit(address(links));
         emit CrewFounded(1, 0, _label("kek-crew"), true);
         uint256 id = _found(alice, 0, "kek-crew", true);
         assertEq(id, 1);
-        assertGt(imd.balanceOf(DEAD), before, "the fee bought $IMD for 0x..dEaD");
+        assertGt(imd.balanceOf(IMD_BURN), before, "the fee bought $IMD for 0x..dEaD");
         assertEq(address(links).balance, 0);
         assertEq(address(burner).balance, 0);
         (uint256 captain, bytes32 name, uint256 members, bool open, bool alive) = links.crew(1);
@@ -137,7 +137,7 @@ contract LARPLinksTest is Base {
         vm.prank(alice);
         imd.approve(address(links), type(uint256).max);
         uint256 due = burner.quoteImd(CREW);
-        uint256 dead = imd.balanceOf(DEAD);
+        uint256 dead = imd.balanceOf(IMD_BURN);
         vm.prank(alice);
         vm.expectRevert(LARPLinks.TooMuchImd.selector);
         links.foundCrewWithImd(0, _label("imd-crew"), true, due - 1);
@@ -145,7 +145,7 @@ contract LARPLinksTest is Base {
         uint256 id = links.foundCrewWithImd(0, _label("imd-crew"), true, due);
         assertEq(links.crewOf(0), id);
         assertEq(imd.balanceOf(alice), 1_000 ether - due);
-        assertEq(imd.balanceOf(DEAD) - dead, due - due * 690 / 10_000);
+        assertEq(imd.balanceOf(IMD_BURN) - dead, due - due * 690 / 10_000);
     }
 
     function test_CrewFoundingRules() public {

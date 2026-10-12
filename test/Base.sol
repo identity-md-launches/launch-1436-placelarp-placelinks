@@ -194,7 +194,7 @@ abstract contract Base is Test {
     // Uniswap v4's MIN_SQRT_PRICE + 1, as LARPBurner uses
     uint160 constant MIN_PRICE_LIMIT = 4295128740;
 
-    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant IMD_BURN = 0xe29386719C155B6847aD5a4E97C6674f10ffc750; // IMD's burn, its BurnExecutor: where LARP's $IMD goes
 
     MockNFT identity;
     MockIMD imd;
@@ -241,7 +241,9 @@ abstract contract Base is Test {
         // price = currency1 per currency0: 10,000 IMD6900 per IMD (tick ~92,100), or its inverse
         pm.initialize(pair, TickMath.getSqrtPriceAtTick(imdIs0 ? int24(92_100) : int24(-92_100)));
 
-        burner = _newBurner(address(pm));
+        // the burner knows IMD Names (the swarm's IMD6900 share) before it exists, as the launch's CREATE3 placement
+        // does: here, the address IMD Names gets three creations later (MockIntake, LARP, IMDNames)
+        burner = _newBurner(address(pm), vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3));
         intake = new MockIntake();
         oracleSigner = vm.addr(oracleKey);
         larp = new LARP(address(identity));
@@ -254,10 +256,15 @@ abstract contract Base is Test {
         vm.deal(address(this), 10_000 ether);
     }
 
-    function _newBurner(address poolManager) internal returns (LARPBurner) {
+    function _newBurner(address poolManager, address names_) internal returns (LARPBurner) {
         return new LARPBurner(
-            poolManager, address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            poolManager, address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            names_
         );
+    }
+
+    function _newBurner(address poolManager) internal returns (LARPBurner) {
+        return _newBurner(poolManager, address(0));
     }
 
     function _fillPair() internal {

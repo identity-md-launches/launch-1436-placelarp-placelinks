@@ -41,7 +41,8 @@ struct Attestation {
 }
 
 /// @title Swarm prices: the IMD swarm judges every price change, anyone executes it, by the IMD6900 frens
-/// @notice LARP's prices (names by length, crews) change only by the IMD swarm's verdict:
+/// @notice LARP's prices (names by length, crews) and its IMD6900 share (the part of every burned fee that buys
+/// IMD6900 and burns it; the rest goes to IMD's burn) change only by the IMD swarm's verdict:
 /// 1. Anyone proposes new prices with `propose`, paying IMD's oracle in $IMD. The contract writes the question itself
 ///    (the proposal and LARP's pricing guidelines) and asks it through IMD's Intake.
 /// 2. A panel of at least 9 IMD agents judges it against LARP's pricing guidelines (at the 24-hour median ETH/USD
@@ -51,15 +52,18 @@ struct Attestation {
 /// 3. Anyone applies an approved proposal with `execute`, once a week at most, while the prices it was made against
 ///    still stand.
 /// Guardrails bound what any verdict can do: every price stays between MIN_PRICE and MAX_PRICE, moves at most 2x up
-/// or down per change, and short names never cost less than long ones.
+/// or down per change, and short names never cost less than long ones; the share stays between 0 and 100% (MAX_SHARE)
+/// and moves at most 2x up or down, or one percentage point, per change. It starts at 6.9%.
 /// @dev The verdict rests on IMD's oracle signer and the panel. If IMD stops answering, prices stay where they are.
 abstract contract SwarmPrices {
-    /// @notice ETH prices: 1-3 letter names, 4 letter names, 5+ letter names, crews.
+    /// @notice ETH prices: 1-3 letter names, 4 letter names, 5+ letter names, crews; and the IMD6900 share in basis
+    /// points (of every fee's $IMD, the part that buys IMD6900 and burns it).
     struct Prices {
         uint64 short;
         uint64 four;
         uint64 long;
         uint64 crew;
+        uint16 share;
     }
 
     enum Status {
@@ -84,6 +88,8 @@ abstract contract SwarmPrices {
     /// @notice No price goes below this or above MAX_PRICE.
     uint256 public constant MIN_PRICE = 0.00001 ether;
     uint256 public constant MAX_PRICE = 1 ether;
+    /// @notice The IMD6900 share can be all of the $IMD, in basis points.
+    uint256 public constant MAX_SHARE = 10_000;
     /// @notice At least this long between two applied changes.
     uint256 public constant COOLDOWN = 7 days;
     /// @notice An approved proposal can be executed for this long after its verdict.
@@ -150,6 +156,7 @@ abstract contract SwarmPrices {
         _checkStep(now_.four, next.four);
         _checkStep(now_.long, next.long);
         _checkStep(now_.crew, next.crew);
+        _checkShareStep(now_.share, next.share);
 
         uint64 number = ++proposalCount;
         bytes memory body = _body(number, now_, next);
@@ -209,6 +216,12 @@ abstract contract SwarmPrices {
         emit PricesChanged(requestId, p.next);
     }
 
+    /// @notice The IMD6900 share now, in basis points: of every fee's $IMD, the part LARP's burner spends on IMD6900
+    /// (burned); the rest goes to IMD's burn. The swarm votes it with the prices.
+    function imd6900ShareBps() external view returns (uint256) {
+        return prices.share;
+    }
+
     // ------------------------------------------------------------------ internals
 
     /// @dev $IMD: the asset IMD's oracle is paid in.
@@ -218,7 +231,16 @@ abstract contract SwarmPrices {
         if (
             p.short < MIN_PRICE || p.four < MIN_PRICE || p.long < MIN_PRICE || p.crew < MIN_PRICE || p.short > MAX_PRICE
                 || p.four > MAX_PRICE || p.long > MAX_PRICE || p.crew > MAX_PRICE || p.short < p.four || p.four < p.long
+                || p.share > MAX_SHARE
         ) revert OutOfBounds();
+    }
+
+    /// @dev The share moves at most 2x up or down, or one percentage point (so it can leave and reach 0).
+    function _checkShareStep(uint256 from, uint256 to) internal pure {
+        if (to == from) return;
+        uint256 d = to > from ? to - from : from - to;
+        if (d <= 100) return;
+        if (to > from * 2 || to * 2 < from) revert OutOfBounds();
     }
 
     /// @dev At most 2x up or down.
@@ -264,18 +286,18 @@ abstract contract SwarmPrices {
     /// @dev The question the swarm judges: the proposal and LARP's pricing guidelines, as an oracle body.
     function _body(uint64 number, Prices memory from, Prices memory to) internal view returns (bytes memory) {
         return bytes.concat(
-            '{"v":1,"question":"LARP price proposal #',
+            '{"v":1,"question":"LARP proposal #',
             bytes(_decimal(number)),
-            " for name.imd names and crews on Ethereum. Current prices in ETH: ",
+            " for name.imd names, crews and the IMD6900 share on Ethereum. Current terms: ",
             bytes(_list(from)),
-            ". Proposed prices in ETH: ",
+            ". Proposed terms: ",
             bytes(_list(to)),
-            ". At the median Coinbase, Kraken and Binance ETH/USD price over the last 24 hours, do the proposed prices meet all of LARP's pricing guidelines: a 5+ letter name costs between 1 and 5 US dollars, a crew costs between 1 and 5 US dollars, a 1-3 letter name costs at least 10 times a 5+ letter name, and a 4 letter name costs at least 2 times a 5+ letter name? Answer true if all four hold, false otherwise.\",",
+            ". At the median Coinbase, Kraken and Binance ETH/USD price over the last 24 hours, do the proposed terms meet all of LARP's guidelines: a 5+ letter name costs between 1 and 5 US dollars, a crew costs between 1 and 5 US dollars, a 1-3 letter name costs at least 10 times a 5+ letter name, a 4 letter name costs at least 2 times a 5+ letter name, and the IMD6900 share is between 0% and 100%? Answer true if all five hold, false otherwise.\",",
             '"chainId":',
             bytes(_decimal(block.chainid)),
             ',"window":{"hours":24},"answerType":"bool","evidence":"panel","panelSize":9,"quorum":7,',
             '"validForSeconds":86400,"allowAmbiguous":true,"definitions":{',
-            '"guidelines":"LARP keeps names usable for IMD agents (about 1 to 5 US dollars for a 5+ letter name or a crew) and short names costly enough that nobody can cheaply register them all. If a guideline cannot be checked, answer false.",',
+            '"guidelines":"LARP keeps names usable for IMD agents (about 1 to 5 US dollars for a 5+ letter name or a crew) and short names costly enough that nobody can cheaply register them all. Every LARP fee is burned as $IMD: the IMD6900 share of it buys IMD6900 on the IMD6900/$IMD pool and burns it, the rest goes to IMD\x27s own burn. If a guideline cannot be checked, answer false.",',
             '"ETH/USD":"The median of the Coinbase, Kraken and Binance ETH/USD spot prices over the last 24 hours of the window."',
             "}}"
         );
@@ -285,13 +307,22 @@ abstract contract SwarmPrices {
         return string.concat(
             "1-3 letter names ",
             _eth(p.short),
-            ", 4 letter names ",
+            " ETH, 4 letter names ",
             _eth(p.four),
-            ", 5+ letter names ",
+            " ETH, 5+ letter names ",
             _eth(p.long),
-            ", crews ",
-            _eth(p.crew)
+            " ETH, crews ",
+            _eth(p.crew),
+            " ETH, IMD6900 share ",
+            _pct(p.share)
         );
+    }
+
+    /// @dev Basis points as a percentage: 690 -> "6.9%", 10000 -> "100%".
+    function _pct(uint256 bps) internal pure returns (string memory) {
+        uint256 frac = bps % 100;
+        if (frac == 0) return string.concat(_decimal(bps / 100), "%");
+        return string.concat(_decimal(bps / 100), ".", frac % 10 == 0 ? _decimal(frac / 10) : (frac < 10 ? string.concat("0", _decimal(frac)) : _decimal(frac)), "%");
     }
 
     /// @dev Wei as a decimal ETH amount: 690000000000000 -> "0.00069".

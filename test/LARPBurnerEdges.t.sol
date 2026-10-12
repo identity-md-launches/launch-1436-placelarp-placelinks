@@ -49,24 +49,28 @@ contract LARPBurnerEdgesTest is Base {
     function test_ConstructorRefusesZeroAddresses() public {
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
         new LARPBurner(
-            address(0), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(0), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
         new LARPBurner(
-            address(pm), address(0), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(0), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         vm.expectRevert(LARPBurner.ZeroAddress.selector);
-        new LARPBurner(address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(0), 0, 60, address(0));
+        new LARPBurner(address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(0), 0, 60, address(0), address(0));
         // the hooks may be zero: the hookless pool has none
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         assertEq(b.POOL4_HOOK(), address(0));
         assertEq(b.PAIR_HOOK(), address(0));
     }
 
     function test_Constants() public view {
-        assertEq(burner.DEAD(), 0x000000000000000000000000000000000000dEaD);
+        assertEq(burner.IMD_BURN(), 0xe29386719C155B6847aD5a4E97C6674f10ffc750, "IMD's burn, its BurnExecutor");
+        assertEq(burner.MAX_SHARE_BPS(), 10_000);
         assertEq(burner.MAX_BURN(), 0.1 ether);
         assertEq(burner.POOL_SHARE_BPS(), 690);
         assertEq(address(burner.POOL_MANAGER()), address(pm));
@@ -159,6 +163,10 @@ contract LARPBurnerEdgesTest is Base {
         waiting = bound(waiting, 1e12, 0.5 ether);
         v1 = bound(v1, 0, 0.3 ether);
         v2 = bound(v2, 0, 0.3 ether);
+        // dust buys no $IMD (a swap that fills nothing is refused), so it waits like any unfilled ETH: a caller's own
+        // ETH is either none or enough to buy something
+        if (v1 != 0 && v1 < 1e12) v1 = 1e12;
+        if (v2 != 0 && v2 < 1e12) v2 = 1e12;
         vm.deal(address(burner), waiting);
         vm.deal(address(this), v1 + v2);
         uint256 pmBefore = address(pm).balance;
@@ -200,17 +208,17 @@ contract LARPBurnerEdgesTest is Base {
         assertEq(bytes4(err), LARPBurner.TooLittleGas.selector);
         assertEq(address(burner).balance, 0, "a refused burn keeps nothing of the fee");
         assertEq(alice.balance, 1 ether);
-        assertEq(imd.balanceOf(DEAD), 0);
+        assertEq(imd.balanceOf(IMD_BURN), 0);
 
         // nothing to sell, nothing held: the call does nothing and needs no budget
         (ok,) = address(burner).call{gas: 150_000}(abi.encodeCall(burner.burn, (0)));
         assertTrue(ok, "an empty burn runs no leg");
 
-        // 14 wei of $IMD: the share rounds to 0, so no leg runs and 150k gas burns it all to DEAD
+        // 14 wei of $IMD: the share rounds to 0, so no leg runs and 150k gas burns it all to IMD_BURN
         imd.mint(address(burner), 14);
         (ok,) = address(burner).call{gas: 150_000}(abi.encodeCall(burner.burnImd, ()));
         assertTrue(ok, "no share, no leg, no budget");
-        assertEq(imd.balanceOf(DEAD), 14);
+        assertEq(imd.balanceOf(IMD_BURN), 14);
         assertEq(imd.balanceOf(address(burner)), 0);
 
         // 15 wei: a share of 1 wei needs the IMD6900 leg, which needs its budget
@@ -272,7 +280,7 @@ contract LARPBurnerEdgesTest is Base {
         _fillPool4();
         assertEq(burner.burn(0), 0, "no ETH, no $IMD: nothing happens");
         burner.burnImd();
-        assertEq(imd.balanceOf(DEAD), 0);
+        assertEq(imd.balanceOf(IMD_BURN), 0);
         // but a floor with nothing to sell is refused
         vm.expectRevert(LARPBurner.TooLittleIMD.selector);
         burner.burn(1);
@@ -304,7 +312,8 @@ contract LARPBurnerEdgesTest is Base {
     function test_AWrongPool4KeyFallsToTheHooklessPool() public {
         // a burner whose POOL4 (a hook nobody initialized a pool with) does not exist on the PoolManager
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, makeAddr("hook"), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 60, makeAddr("hook"), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         _fillBackup();
         vm.expectEmit(true, false, true, false, address(b));
@@ -318,7 +327,8 @@ contract LARPBurnerEdgesTest is Base {
     function test_NoPoolAtAllParksAndQuotesNothing() public {
         // a fee tier no pool was initialized with
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 3_000, 60, address(0), 3_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 3_000, 60, address(0), 3_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         _fillPool4();
         _fillBackup();
@@ -363,7 +373,7 @@ contract LARPBurnerEdgesTest is Base {
         burner.burnImd();
         uint256 share = held * 690 / 10_000;
         assertEq(imd.balanceOf(address(pm)) - pmImd, share, "exactly the share went to the pair pool");
-        assertEq(imd.balanceOf(DEAD), held - share, "the rest to DEAD");
+        assertEq(imd.balanceOf(IMD_BURN), held - share, "the rest to IMD_BURN");
         assertEq(imd.balanceOf(address(burner)), 0);
         assertEq(imd6900.balanceOf(address(burner)), 0);
         if (share == 0) assertEq(imd6900.totalSupply(), supply, "under 15 wei there is no share");

@@ -21,7 +21,7 @@ contract SwarmPricesEdgesTest is Base {
     }
 
     function _p(uint64 s, uint64 f, uint64 l, uint64 c) internal pure returns (SwarmPrices.Prices memory) {
-        return SwarmPrices.Prices(s, f, l, c);
+        return SwarmPrices.Prices(s, f, l, c, 690);
     }
 
     function _propose(SwarmPrices.Prices memory next) internal returns (bytes32 id) {

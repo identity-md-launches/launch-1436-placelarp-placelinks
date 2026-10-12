@@ -31,22 +31,31 @@ interface IBurnable {
     function burn(uint256 amount) external;
 }
 
+/// @dev IMD Names: the swarm-voted share of the $IMD that buys IMD6900 (SwarmPrices)
+interface IShareSource {
+    function imd6900ShareBps() external view returns (uint256);
+}
+
 /// @title LARP burner: every fee buys $IMD and burns it, by the IMD6900 frens
 /// @notice Every fee and royalty of the LARP protocol ends here, as ETH or as $IMD, and leaves only burned.
 /// - ETH buys $IMD: on POOL4, IMD's ETH/$IMD pool, so every fee is volume there; if POOL4 can't take the trade, on the
 ///   hookless ETH/$IMD pool (1%, tick spacing 200), which nobody can close; if neither can, the ETH waits here for
 ///   anyone's next `burn`.
-/// - Of the $IMD, POOL_SHARE_BPS (6.9%) buys IMD6900 on the IMD6900/$IMD pool, buying pressure, and that IMD6900 is
-///   burned (its supply shrinks). The rest goes to 0x…dEaD, where nobody can ever move it. If the IMD6900 buy can't
-///   happen, that share goes to 0x…dEaD too.
+/// - Of the $IMD, a share the IMD swarm votes (IMD Names' `imd6900ShareBps`: 6.9% at launch, anywhere from 0 to 100%)
+///   buys IMD6900 on the IMD6900/$IMD pool, buying pressure, and that IMD6900 is burned (its supply shrinks). The rest
+///   goes to IMD's own burn, its BurnExecutor (IMD_BURN), which anyone can send on to Base, where it is burned out of
+///   $IMD's supply. If the IMD6900 buy can't happen, that share goes to IMD's burn too.
 /// @dev No owner, no roles, no upgrades. At most MAX_BURN of ETH is spent per call, and of the ETH that was already
 /// waiting here at most MAX_BURN leaves per block, however many calls: small trades aren't worth sandwiching against
 /// these pools' fees, and a batch of calls in one transaction can't make a big one. Royalties a market paid in WETH
 /// are unwrapped on the way. A leg that runs code a third party controls (POOL4's hook; the pair hook and IMD6900)
 /// gets a fixed gas budget: a caller can't starve it, and if it eats the whole budget it is skipped, not fatal.
 contract LARPBurner {
-    /// @notice Where $IMD goes: nobody holds this key.
-    address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    /// @notice Where $IMD goes: IMD's own burn, its BurnExecutor on Ethereum. It holds the $IMD it is sent until anyone
+    /// calls its `bridgeToBaseBurnReceiver` (paying LayerZero's fee), which sends it to Base, where a contract with no
+    /// owner burns it (`burn()`, anyone). IMD (its owner) can redirect or rescue what it holds: the same trust as every
+    /// other $IMD burn, unlike 0x…dEaD, which parks $IMD without lowering its supply.
+    address public constant IMD_BURN = 0xe29386719C155B6847aD5a4E97C6674f10ffc750;
     /// @notice The most ETH one call spends, and the most of the ETH that was already waiting here that leaves per
     /// block (the rest waits for the next block). A caller's own fee, up to this, always goes through.
     uint256 public constant MAX_BURN = 0.1 ether;
@@ -54,13 +63,18 @@ contract LARPBurner {
     /// pair hook and IMD6900's proxy): several times the heaviest leg measured (~800k). A caller who can't fund the
     /// whole budget is refused before the try; a leg that spends all of it fails on its own account and is skipped.
     uint256 internal constant LEG_GAS = 3_000_000;
-    /// @dev What a call needs after a budgeted leg was refused: the burn to DEAD (or the next route's own check) and
+    /// @dev What a call needs after a budgeted leg was refused: the send to IMD_BURN (or the next route's own check) and
     /// its events.
     uint256 internal constant AFTER_GAS = 150_000;
     /// @dev WETH9 on Ethereum: royalties paid in WETH (offers on Seaport, Blur) are unwrapped and sold with the ETH.
     address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    /// @notice The share of the $IMD that buys IMD6900 on the IMD6900/$IMD pool, in basis points.
+    /// @notice The share of the $IMD that buys IMD6900 on the IMD6900/$IMD pool, in basis points, until the swarm sets
+    /// another, and whenever IMD Names can't answer (see `shareBps`).
     uint256 public constant POOL_SHARE_BPS = 690;
+    /// @notice The most the swarm's share can be: all of it.
+    uint256 public constant MAX_SHARE_BPS = 10_000;
+    /// @dev The gas IMD Names' share read gets: a storage read, with room.
+    uint256 internal constant SHARE_GAS = 30_000;
     /// @dev v4-core TickMath.MIN_SQRT_PRICE + 1 and MAX_SQRT_PRICE - 1: trade as far as the pool goes.
     uint160 internal constant MIN_PRICE_LIMIT = 4295128740;
     uint160 internal constant MAX_PRICE_LIMIT = 1461446703485210103287273052203988822378723970341;
@@ -83,6 +97,8 @@ contract LARPBurner {
     uint24 public immutable PAIR_FEE;
     int24 public immutable PAIR_SPACING;
     address public immutable PAIR_HOOK;
+    /// @notice IMD Names, whose swarm-voted `imd6900ShareBps` sets the IMD6900 share (zero: always POOL_SHARE_BPS).
+    address public immutable NAMES;
 
     /// @dev The block in which ETH that was already waiting here was last spent, and how much of it in that block.
     uint64 internal _burnBlock;
@@ -92,7 +108,7 @@ contract LARPBurner {
     event Bought(uint256 eth, uint256 imd, uint8 route);
     /// @notice No route could take `eth`: it waits here for the next `burn`.
     event Parked(uint256 eth);
-    /// @notice `imdSpent` $IMD bought `imd6900Burned` IMD6900, burned; `imdBurned` $IMD went to DEAD.
+    /// @notice `imdSpent` $IMD bought `imd6900Burned` IMD6900, burned; `imdBurned` $IMD went to IMD's burn (IMD_BURN).
     event Burned(uint256 imdBurned, uint256 imdSpent, uint256 imd6900Burned);
 
     error ZeroAddress();
@@ -117,7 +133,8 @@ contract LARPBurner {
         address imd6900,
         uint24 pairFee,
         uint24 pairSpacing,
-        address pairHook
+        address pairHook,
+        address names
     ) {
         if (poolManager == address(0) || imd == address(0) || imd6900 == address(0)) {
             revert ZeroAddress();
@@ -133,6 +150,19 @@ contract LARPBurner {
         PAIR_FEE = pairFee;
         PAIR_SPACING = _spacing(pairSpacing);
         PAIR_HOOK = pairHook;
+        NAMES = names;
+    }
+
+    /// @notice The share of the $IMD that buys IMD6900 now, in basis points: IMD Names' swarm-voted one, or
+    /// POOL_SHARE_BPS (6.9%) if IMD Names isn't there, doesn't answer within SHARE_GAS, or answers more than all.
+    function shareBps() public view returns (uint256) {
+        address n = NAMES;
+        if (n.code.length == 0) return POOL_SHARE_BPS;
+        (bool ok, bytes memory r) =
+            n.staticcall{gas: SHARE_GAS}(abi.encodeWithSelector(IShareSource.imd6900ShareBps.selector));
+        if (!ok || r.length != 32) return POOL_SHARE_BPS;
+        uint256 s = abi.decode(r, (uint256));
+        return s > MAX_SHARE_BPS ? POOL_SHARE_BPS : s;
     }
 
     /// @dev A tick spacing, taken unsigned (deployers' manifests take no signed constructor arguments) and stored as the
@@ -200,7 +230,8 @@ contract LARPBurner {
         _burnImd();
     }
 
-    /// @notice Burns all the $IMD here: 6.9% buys IMD6900, burned; the rest to DEAD. Fees paid in $IMD land here and
+    /// @notice Burns all the $IMD here: the swarm's share (`shareBps`) buys IMD6900, burned; the rest goes to IMD's burn.
+    /// Fees paid in $IMD land here and
     /// are burned at once; anyone can call it.
     function burnImd() external locked {
         _burnImd();
@@ -251,11 +282,12 @@ contract LARPBurner {
         return abi.encode(uint256(uint128(bought)));
     }
 
-    /// @dev 6.9% of the $IMD here buys IMD6900 (burned) if the pair pool takes it; everything left goes to DEAD.
+    /// @dev The swarm's share of the $IMD here buys IMD6900 (burned) if the pair pool takes it; everything left goes
+    /// to IMD's burn.
     function _burnImd() internal {
         uint256 held = _imdHeld();
         if (held == 0) return;
-        uint256 share = held * POOL_SHARE_BPS / 10_000;
+        uint256 share = held * shareBps() / 10_000;
         uint256 burned6900;
         if (share != 0) {
             (bool ok, bytes memory result) = _tryUnlock(TO_PAIR, share);
@@ -263,7 +295,7 @@ contract LARPBurner {
             else share = 0;
         }
         uint256 rest = _imdHeld();
-        _send(IMD, DEAD, rest);
+        if (rest != 0) _send(IMD, IMD_BURN, rest);
         emit Burned(rest, share, burned6900);
     }
 

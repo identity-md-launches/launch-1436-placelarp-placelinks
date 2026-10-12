@@ -119,7 +119,8 @@ contract LARPBurnerTest is Base {
     function test_SpacingAboveV4sLargestReverts() public {
         vm.expectRevert(LARPBurner.BadSpacing.selector);
         new LARPBurner(
-            address(pm), address(imd), 10_000, 32_768, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 32_768, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         vm.expectRevert(LARPBurner.BadSpacing.selector);
         new LARPBurner(
@@ -133,10 +134,12 @@ contract LARPBurnerTest is Base {
             address(imd6900),
             0,
             type(uint24).max,
+            address(0),
             address(0)
         );
         LARPBurner ok = new LARPBurner(
-            address(pm), address(imd), 10_000, 32_767, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 32_767, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         assertEq(int256(ok.POOL4_SPACING()), 32_767);
     }
@@ -251,7 +254,7 @@ contract LARPBurnerTest is Base {
         burner.burn(0);
         assertEq(MockWETH(weth).balanceOf(address(burner)), 0, "the WETH was unwrapped");
         assertEq(address(burner).balance, 0.59 ether, "and joined the waiting ETH, sold MAX_BURN a block");
-        assertGt(imd.balanceOf(DEAD), 0);
+        assertGt(imd.balanceOf(IMD_BURN), 0);
     }
 
     function test_RoyaltiesArriveByPlainTransfer() public {
@@ -261,7 +264,7 @@ contract LARPBurnerTest is Base {
         assertEq(address(burner).balance, 0.03 ether);
     }
 
-    // --- $IMD: 6.9% buys IMD6900, burned; the rest to DEAD ---
+    // --- $IMD: 6.9% buys IMD6900, burned; the rest to IMD_BURN ---
 
     function test_ShareBuysIMD6900AndBurnsIt() public {
         _fillPool4();
@@ -272,7 +275,7 @@ contract LARPBurnerTest is Base {
         uint256 got = burner.burn{value: 0.05 ether}(0);
 
         uint256 share = got * 690 / 10_000;
-        assertEq(imd.balanceOf(DEAD), got - share, "93.1% to 0x..dEaD");
+        assertEq(imd.balanceOf(IMD_BURN), got - share, "93.1% to 0x..dEaD");
         assertLt(imd6900.totalSupply(), supply, "IMD6900 bought and burned");
         assertApproxEqRel(supply - imd6900.totalSupply(), share * 10_000, 0.02e18, "at ~10,000 IMD6900 per IMD");
         assertTrue(_slot0(pair) != pairBefore, "the pair pool's price moved: buying pressure");
@@ -283,7 +286,7 @@ contract LARPBurnerTest is Base {
     function test_AnEmptyPairPoolMeansItAllBurnsAsIMD() public {
         _fillPool4(); // no pair liquidity
         uint256 got = burner.burn{value: 0.05 ether}(0);
-        assertEq(imd.balanceOf(DEAD), got, "the share went to 0x..dEaD too");
+        assertEq(imd.balanceOf(IMD_BURN), got, "the share went to 0x..dEaD too");
         assertEq(imd.balanceOf(address(burner)), 0);
     }
 
@@ -292,7 +295,7 @@ contract LARPBurnerTest is Base {
         _fillPair();
         vm.mockCallRevert(address(imd6900), abi.encodeWithSignature("burn(uint256)"), "no");
         uint256 got = burner.burn{value: 0.05 ether}(0);
-        assertEq(imd.balanceOf(DEAD), got);
+        assertEq(imd.balanceOf(IMD_BURN), got);
     }
 
     function test_BurnImdBurnsWhatArrivesInIMD() public {
@@ -303,7 +306,7 @@ contract LARPBurnerTest is Base {
         emit Burned(93.1 ether, 6.9 ether, 0);
         vm.prank(carol); // anyone
         burner.burnImd();
-        assertEq(imd.balanceOf(DEAD), 93.1 ether);
+        assertEq(imd.balanceOf(IMD_BURN), 93.1 ether);
         assertLt(imd6900.totalSupply(), supply);
     }
 
@@ -356,13 +359,13 @@ contract LARPBurnerTest is Base {
         uint160 backupPrice = _slot0(backup);
         uint256 burned;
         for (uint256 gas = 100_000; gas < 4_500_000; gas += 100_000) {
-            uint256 deadBefore = imd.balanceOf(DEAD);
+            uint256 deadBefore = imd.balanceOf(IMD_BURN);
             uint256 supplyBefore = imd6900.totalSupply();
             (bool ok,) = address(burner).call{value: 0.001 ether, gas: gas}(abi.encodeCall(burner.burn, (0)));
             assertEq(_slot0(backup), backupPrice, "the backup is never used while POOL4 can take the trade");
             if (ok) {
                 ++burned;
-                assertGt(imd.balanceOf(DEAD), deadBefore);
+                assertGt(imd.balanceOf(IMD_BURN), deadBefore);
                 assertLt(imd6900.totalSupply(), supplyBefore, "the IMD6900 buy was never skipped");
             }
         }
@@ -387,7 +390,8 @@ contract LARPBurnerTest is Base {
         adder.add(heavyPair, 1e23);
         _fillPool4();
         b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(token), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(token), 0, 60, address(0),
+            address(0)
         );
     }
 
@@ -406,11 +410,11 @@ contract LARPBurnerTest is Base {
         assertEq(bytes4(err), LARPBurner.TooLittleGas.selector);
         assertEq(token.totalSupply(), supplyBefore);
         assertEq(address(heavy).balance, 0, "the ETH came back with the revert");
-        assertEq(imd.balanceOf(DEAD), 0, "nothing went to DEAD");
+        assertEq(imd.balanceOf(IMD_BURN), 0, "nothing went to IMD_BURN");
         // with enough gas the same call buys and burns IMD6900
         heavy.burn{value: 0.001 ether, gas: 5_000_000}(0);
         assertLt(token.totalSupply(), supplyBefore);
-        assertGt(imd.balanceOf(DEAD), 0);
+        assertGt(imd.balanceOf(IMD_BURN), 0);
     }
 
     /// @dev Across gas limits from 2.5M to 5M (the legs' budgets are funded from ~3.35M), a burn against a heavy
@@ -421,17 +425,17 @@ contract LARPBurnerTest is Base {
         uint256 refused;
         for (uint256 gas = 2_500_000; gas <= 5_000_000; gas += 50_000) {
             uint256 supplyBefore = token.totalSupply();
-            uint256 deadBefore = imd.balanceOf(DEAD);
+            uint256 deadBefore = imd.balanceOf(IMD_BURN);
             (bool ok, bytes memory err) =
                 address(heavy).call{value: 0.001 ether, gas: gas}(abi.encodeCall(heavy.burn, (0)));
             if (ok) {
                 ++burned;
-                assertGt(imd.balanceOf(DEAD), deadBefore);
+                assertGt(imd.balanceOf(IMD_BURN), deadBefore);
                 assertLt(token.totalSupply(), supplyBefore, "the IMD6900 buy was skipped");
             } else {
                 ++refused;
                 assertEq(bytes4(err), LARPBurner.TooLittleGas.selector, "a starved burn reverts with TooLittleGas");
-                assertEq(imd.balanceOf(DEAD), deadBefore, "a refused burn moves nothing");
+                assertEq(imd.balanceOf(IMD_BURN), deadBefore, "a refused burn moves nothing");
             }
         }
         assertGt(burned, 0, "the sweep reached a gas limit that works");
@@ -440,13 +444,13 @@ contract LARPBurnerTest is Base {
 
     /// @dev A genuine revert of the IMD6900 leg (an empty pair pool: the swap walks the whole tick range and fills
     /// nothing, ~340k gas of work before `Unfilled`) is skipped once the leg's budget is funded: the share goes to
-    /// DEAD and the call goes through. A call that can't fund the budget is refused, never left to the leg's gas.
+    /// IMD_BURN and the call goes through. A call that can't fund the budget is refused, never left to the leg's gas.
     function test_AGenuineFailureIsNotMistakenForTooLittleGas() public {
         _fillPool4(); // no pair liquidity
-        uint256 deadBefore = imd.balanceOf(DEAD);
+        uint256 deadBefore = imd.balanceOf(IMD_BURN);
         (bool ok,) = address(burner).call{value: 0.001 ether, gas: 5_000_000}(abi.encodeCall(burner.burn, (0)));
         assertTrue(ok, "a failed leg that reverted for a real reason is skipped, not refused");
-        assertGt(imd.balanceOf(DEAD), deadBefore);
+        assertGt(imd.balanceOf(IMD_BURN), deadBefore);
         assertEq(imd.balanceOf(address(burner)), 0);
         bytes memory err;
         (ok, err) = address(burner).call{value: 0.001 ether, gas: 300_000}(abi.encodeCall(burner.burn, (0)));
@@ -455,22 +459,22 @@ contract LARPBurnerTest is Base {
     }
 
     /// @dev An IMD6900 whose `burn` eats every unit of gas (the real one is a proxy: one upgrade away) can't halt the
-    /// burner: the leg spends its budget and is skipped, the share burns as $IMD at DEAD, and every paid entry point
+    /// burner: the leg spends its budget and is skipped, the share burns as $IMD at IMD_BURN, and every paid entry point
     /// (register, link, foundCrew and their $IMD twins all end in `burn` or `burnImd`) keeps working.
     function test_AGasEatingIMD6900IsSkippedNotFatal() public {
         LARPBurner b = _burnerOn(new GasHogIMD6900());
         (bool ok, bytes memory err) = address(b).call{value: 0.0069 ether, gas: 30_000_000}(abi.encodeCall(b.burn, (0)));
         assertTrue(ok, string.concat("burn reverted: ", vm.toString(err)));
-        assertGt(imd.balanceOf(DEAD), 0, "all the $IMD burned at DEAD");
+        assertGt(imd.balanceOf(IMD_BURN), 0, "all the $IMD burned at IMD_BURN");
         assertEq(address(b).balance, 0, "the ETH was spent");
 
-        uint256 dead = imd.balanceOf(DEAD);
+        uint256 dead = imd.balanceOf(IMD_BURN);
         imd.mint(address(b), 10 ether);
         vm.expectEmit(true, true, true, false, address(b));
         emit Burned(10 ether, 0, 0);
         (ok, err) = address(b).call{gas: 30_000_000}(abi.encodeCall(b.burnImd, ()));
         assertTrue(ok, string.concat("burnImd reverted: ", vm.toString(err)));
-        assertEq(imd.balanceOf(DEAD), dead + 10 ether);
+        assertEq(imd.balanceOf(IMD_BURN), dead + 10 ether);
 
         // a caller still can't starve the leg: too little to fund its budget is refused, not skipped
         imd.mint(address(b), 10 ether);
@@ -491,7 +495,8 @@ contract LARPBurnerTest is Base {
         adder.add{value: 1_000 ether}(hooked, 1e21);
         _fillBackup();
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, hog, 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 60, hog, 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
         vm.expectEmit(true, false, true, false, address(b));
         emit Bought(0.05 ether, 0, 1);

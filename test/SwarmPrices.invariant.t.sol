@@ -67,7 +67,7 @@ contract SwarmHandler is Test {
         intake = intake_;
         imd = imd_;
         oracleKey = oracleKey_;
-        (expected.short, expected.four, expected.long, expected.crew) = names.prices();
+        (expected.short, expected.four, expected.long, expected.crew, expected.share) = names.prices();
         for (uint256 i; i < 3; ++i) {
             imd.mint(proposers[i], 1_000 ether);
             vm.prank(proposers[i]);
@@ -81,15 +81,16 @@ contract SwarmHandler is Test {
 
     /// @dev Each price is drawn from a third of the current one to triple it, so most proposals sit at the 2x edges.
     function propose(uint256 who, uint256 s, uint256 f, uint256 l, uint256 c, uint256 fee) external {
-        (uint64 cs, uint64 cf, uint64 cl, uint64 cc) = names.prices();
+        (uint64 cs, uint64 cf, uint64 cl, uint64 cc, uint16 csh) = names.prices();
         SwarmPrices.Prices memory next = SwarmPrices.Prices(
             uint64(bound(s, cs / 3, uint256(cs) * 3)),
             uint64(bound(f, cf / 3, uint256(cf) * 3)),
             uint64(bound(l, cl / 3, uint256(cl) * 3)),
-            uint64(bound(c, cc / 3, uint256(cc) * 3))
+            uint64(bound(c, cc / 3, uint256(cc) * 3)),
+            csh
         );
         fee = bound(fee, 0.4 ether, 0.6 ether);
-        bool withinRails = _withinRails(SwarmPrices.Prices(cs, cf, cl, cc), next);
+        bool withinRails = _withinRails(SwarmPrices.Prices(cs, cf, cl, cc, csh), next);
         address proposer = proposers[who % 3];
         uint256 treasury = imd.balanceOf(intake.treasury());
         vm.prank(proposer);
@@ -192,8 +193,8 @@ contract SwarmHandler is Test {
         if (ids.length == 0) return;
         bytes32 id = ids[which % ids.length];
         SwarmPrices.Proposal memory p = names.proposal(id);
-        (uint64 s, uint64 f, uint64 l, uint64 c) = names.prices();
-        SwarmPrices.Prices memory before = SwarmPrices.Prices(s, f, l, c);
+        (uint64 s, uint64 f, uint64 l, uint64 c, uint16 sh) = names.prices();
+        SwarmPrices.Prices memory before = SwarmPrices.Prices(s, f, l, c, sh);
         uint64 epochBefore = names.epoch();
         uint64 lastChange = names.lastChange();
         bool may = p.status == SwarmPrices.Status.Approved && block.timestamp <= p.decidedAt + 14 days
@@ -202,7 +203,7 @@ contract SwarmHandler is Test {
         try names.execute(id) {
             assertTrue(may, "an execution the rules forbid went through");
             assertTrue(sawValidApproval[id], "an executed proposal the oracle never validly approved");
-            (s, f, l, c) = names.prices();
+            (s, f, l, c, sh) = names.prices();
             assertEq(s, p.next.short);
             assertEq(f, p.next.four);
             assertEq(l, p.next.long);
@@ -218,7 +219,7 @@ contract SwarmHandler is Test {
             ++executions;
         } catch {
             assertFalse(may, "an execution the rules allow was refused");
-            (s, f, l, c) = names.prices();
+            (s, f, l, c, sh) = names.prices();
             assertEq(s, before.short);
             assertEq(f, before.four);
             assertEq(l, before.long);
@@ -298,12 +299,12 @@ contract SwarmPricesInvariantTest is Base {
     }
 
     function _prices() internal view returns (SwarmPrices.Prices memory p) {
-        (p.short, p.four, p.long, p.crew) = names.prices();
+        (p.short, p.four, p.long, p.crew, p.share) = names.prices();
     }
 
     /// @dev Prices are exactly what the last executed proposal set (or the start): nothing else moves them.
     function invariant_PricesChangeOnlyByExecution() public view {
-        (uint64 s, uint64 f, uint64 l, uint64 c) = handler.expected();
+        (uint64 s, uint64 f, uint64 l, uint64 c,) = handler.expected();
         SwarmPrices.Prices memory p = _prices();
         assertEq(p.short, s);
         assertEq(p.four, f);

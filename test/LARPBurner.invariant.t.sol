@@ -103,7 +103,7 @@ contract Trader {
 /// back), and now and then the PoolManager refuses every unlock (so the ETH parks). Ghost totals record what came in
 /// and what the PoolManager received; a model of the block's allowance for waiting ETH says what each call may sell.
 contract BurnerHandler is Test {
-    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant IMD_BURN = 0xe29386719C155B6847aD5a4E97C6674f10ffc750; // IMD's burn, its BurnExecutor: where LARP's $IMD goes
 
     LARPBurner public burner;
     MockIMD public imd;
@@ -336,7 +336,7 @@ contract BurnerHandler is Test {
         _afterImdBurn(held + bought, pmImd - bought, supply);
     }
 
-    /// @dev After any burn: nothing stays, the IMD6900 share is 6.9% or nothing, and the rest is at DEAD.
+    /// @dev After any burn: nothing stays, the IMD6900 share is 6.9% or nothing, and the rest is at IMD_BURN.
     function _afterImdBurn(uint256 held, uint256 pmImdBefore, uint256 supplyBefore) internal {
         assertEq(imd.balanceOf(address(burner)), 0, "no $IMD stays in the burner");
         assertEq(imd6900.balanceOf(address(burner)), 0, "no IMD6900 stays in the burner");
@@ -348,8 +348,8 @@ contract BurnerHandler is Test {
         imdToPm += spent;
         imd6900Burned += burned6900;
         imdSinceLastBurn = 0;
-        uint256 dead = imd.balanceOf(DEAD);
-        assertGe(dead, deadHighWater, "DEAD never loses $IMD");
+        uint256 dead = imd.balanceOf(IMD_BURN);
+        assertGe(dead, deadHighWater, "IMD_BURN never loses $IMD");
         deadHighWater = dead;
     }
 }
@@ -358,7 +358,7 @@ contract BurnerHandler is Test {
 /// forge-config: default.invariant.depth = 48
 /// forge-config: default.invariant.fail-on-revert = true
 contract LARPBurnerInvariantTest is Test {
-    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant IMD_BURN = 0xe29386719C155B6847aD5a4E97C6674f10ffc750; // IMD's burn, its BurnExecutor: where LARP's $IMD goes
 
     address constant WETH9 = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
@@ -395,7 +395,8 @@ contract LARPBurnerInvariantTest is Test {
         pm.initialize(pair, TickMath.getSqrtPriceAtTick(imdIs0 ? int24(92_100) : int24(-92_100)));
 
         burner = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0)
+            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(0)
         );
 
         imd.mint(address(this), 1e30);
@@ -429,11 +430,11 @@ contract LARPBurnerInvariantTest is Test {
         assertLe(handler.waitingSoldInBlock(), burner.MAX_BURN());
     }
 
-    /// @dev $IMD is conserved: everything that arrived (minted or bought) is at DEAD, in the pair pool (as the IMD6900
+    /// @dev $IMD is conserved: everything that arrived (minted or bought) is at IMD_BURN, in the pair pool (as the IMD6900
     /// buy), or still in the burner waiting for the next burn.
     function invariant_ImdGoesOnlyToDeadOrTheIMD6900Buy() public view {
         assertEq(
-            imd.balanceOf(address(burner)) + imd.balanceOf(DEAD) + handler.imdToPm(),
+            imd.balanceOf(address(burner)) + imd.balanceOf(IMD_BURN) + handler.imdToPm(),
             handler.imdIn() + handler.imdFromPm()
         );
     }
@@ -449,9 +450,9 @@ contract LARPBurnerInvariantTest is Test {
         assertEq(imd6900.balanceOf(address(burner)), 0);
     }
 
-    /// @dev Nothing but $IMD at DEAD: the burner never sends ETH or IMD6900 there.
+    /// @dev Nothing but $IMD at IMD_BURN: the burner never sends ETH or IMD6900 there.
     function invariant_DeadHoldsOnlyImd() public view {
-        assertEq(DEAD.balance, 0);
-        assertEq(imd6900.balanceOf(DEAD), 0);
+        assertEq(IMD_BURN.balance, 0);
+        assertEq(imd6900.balanceOf(IMD_BURN), 0);
     }
 }

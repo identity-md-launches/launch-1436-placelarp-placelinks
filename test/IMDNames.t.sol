@@ -42,12 +42,12 @@ contract IMDNamesTest is Base {
     // --- registering ---
 
     function test_RegisteringMintsTheNameAndBurnsTheFee() public {
-        uint256 before = imd.balanceOf(DEAD);
+        uint256 before = imd.balanceOf(IMD_BURN);
         uint256 id = _register(carol, "frenly");
         assertEq(id, uint256(_label("frenly")), "the token id is the label");
         assertEq(names.ownerOf(id), carol);
         assertEq(names.balanceOf(carol), 1);
-        assertGt(imd.balanceOf(DEAD), before, "the fee bought $IMD for 0x..dEaD");
+        assertGt(imd.balanceOf(IMD_BURN), before, "the fee bought $IMD for 0x..dEaD");
         assertEq(address(names).balance, 0);
         assertEq(address(burner).balance, 0);
         assertEq(names.nameOfToken(id), "frenly.imd");
@@ -130,12 +130,12 @@ contract IMDNamesTest is Base {
         uint256 due = burner.quoteImd(0.00069 ether);
         assertApproxEqRel(due, 1.38 ether, 0.02e18, "0.00069 ETH at ~2,000 IMD per ETH");
         uint256 supply6900 = imd6900.totalSupply();
-        uint256 dead = imd.balanceOf(DEAD);
+        uint256 dead = imd.balanceOf(IMD_BURN);
         vm.prank(carol);
         uint256 id = names.registerWithImd(_label("paid-in-imd"), carol, due);
         assertEq(names.ownerOf(id), carol);
         assertEq(imd.balanceOf(carol), 1_000 ether - due, "exactly the quote, pulled");
-        assertEq(imd.balanceOf(DEAD) - dead, due - due * 690 / 10_000, "93.1% to 0x..dEaD");
+        assertEq(imd.balanceOf(IMD_BURN) - dead, due - due * 690 / 10_000, "93.1% to 0x..dEaD");
         assertLt(imd6900.totalSupply(), supply6900, "6.9% bought IMD6900, burned");
         assertEq(imd.balanceOf(address(burner)), 0);
     }
@@ -257,12 +257,12 @@ contract IMDNamesTest is Base {
         vm.expectRevert(IIMDNames.WrongPrice.selector);
         names.link(kek, 2, 0);
 
-        uint256 before = imd.balanceOf(DEAD);
+        uint256 before = imd.balanceOf(IMD_BURN);
         vm.expectEmit(address(names));
         emit NameLinked(kek, 2, bob, 0.00069 ether);
         vm.prank(bob);
         names.link{value: 0.00069 ether}(kek, 2, 0);
-        assertGt(imd.balanceOf(DEAD), before, "the toll was burned");
+        assertGt(imd.balanceOf(IMD_BURN), before, "the toll was burned");
         assertEq(names.nameOf(2), "kekmaster.imd");
         assertEq(names.tollOf(kek), 0, "paid once");
 
@@ -333,9 +333,9 @@ contract IMDNamesTest is Base {
         // a market pays the royalty to the burner; anyone burns it
         (bool ok,) = address(burner).call{value: 0.0069 ether}("");
         assertTrue(ok);
-        uint256 before = imd.balanceOf(DEAD);
+        uint256 before = imd.balanceOf(IMD_BURN);
         burner.burn(0);
-        assertGt(imd.balanceOf(DEAD), before);
+        assertGt(imd.balanceOf(IMD_BURN), before);
     }
 
     // --- reverse records and text ---

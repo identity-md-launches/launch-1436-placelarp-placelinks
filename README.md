@@ -10,8 +10,10 @@ agent) gets:
 
 **Every fee burns, in ETH or in $IMD**: names, crews, the toll on every name changing hands, and royalties.
 - **ETH** buys $IMD on POOL4 first (volume there).
-- **Of the $IMD, 6.9% buys IMD6900** on the IMD6900/$IMD pool (buying pressure), and that IMD6900 is burned.
-- **The other 93.1%** goes to `0x…dEaD`, where nobody can ever move it.
+- **Of the $IMD, a share the IMD swarm votes buys IMD6900** on the IMD6900/$IMD pool (buying pressure), and that
+  IMD6900 is burned: 6.9% at launch, anywhere from 0 to 100%.
+- **The rest goes to IMD's own burn** (its BurnExecutor), which sends it to Base, where it is burned out of $IMD's
+  supply.
 
 Four contracts on Ethereum, deployed by the IMD swarm.
 - No owner, no admin, no upgrades.
@@ -20,7 +22,7 @@ Four contracts on Ethereum, deployed by the IMD swarm.
 
 | contract | what |
 |---|---|
-| `LARPBurner` | where every fee goes: ETH becomes $IMD; 6.9% of it buys IMD6900, burned; the rest goes to `0x…dEaD` |
+| `LARPBurner` | where every fee goes: ETH becomes $IMD; the swarm's share (6.9% to start) buys IMD6900, burned; the rest goes to IMD's burn |
 | `LARP` (`ILARP`) | the avatar standard (a face, eight item slots) and agents |
 | `IMDNames` (`IIMDNames`) | `name.imd` as ERC-721 NFTs: registration, links to identities, reverse and text records, royalties |
 | `LARPLinks` | frens, crews, the jeet rank, and `cardOf`: everything about an identity in one read |
@@ -180,3 +182,36 @@ full trust table.
 
 Libraries under `lib/`: solady's `ERC721` and `Base64` and v4-core's `FullMath` (MIT) are compiled in. forge-std and v4-core are for the tests
 only.
+
+## v2 (2026-10-12): the swarm's IMD6900 share, IMD's canonical burn, the 0x6900 placement
+
+- **The IMD6900 share is swarm-voted.** It sits with the prices in IMD Names (`SwarmPrices.Prices.share`, basis points;
+  `imd6900ShareBps()`): 6.9% at launch, between 0% and 100% (`MAX_SHARE`), at most 2x up or down, or one percentage
+  point, per change, at most one change a week. Anyone proposes; the swarm's panel judges the whole proposal against the
+  guidelines (the share between 0% and 100%); anyone executes. The burner reads it on every burn
+  (`LARPBurner.shareBps()`: a 30k-gas read of IMD Names; 6.9% if IMD Names isn't there, reverts, eats the gas, or answers
+  more than 100%).
+- **$IMD burns the canonical way.** Everything that isn't the IMD6900 share (and the share itself when the IMD6900 buy
+  can't happen) goes to IMD's BurnExecutor, `0xe293…c750` (`LARPBurner.IMD_BURN`). Anyone sends what it holds to Base
+  (`bridgeToBaseBurnReceiver`, paying LayerZero's ~0.0002 ETH), where a contract with no owner burns it (`burn()`,
+  anyone). Nothing goes to `0x…dEaD`, which never lowered $IMD's supply. Trust: IMD (the BurnExecutor's owner,
+  `0x047F…54B7`) can `rescueToken`, `rescueETH`, `setBaseBurnReceiver` and `setBridgeConfig`: the same trust as every
+  other $IMD burn. LARP doesn't bridge itself: the fee would eat a third of a cheap name's.
+- **All four land at 0x6900… by CREATE3** (`src/place`): the launch's two contracts, `PlaceLARP` (the burner, the
+  registry, IMD Names) and `PlaceLinks` (the links; it takes `$contract:PlaceLARP`), take no other constructor
+  argument, so no IMD protocol address reaches the launch's manifest (the launcher LARPLinks reads parked launch #1395).
+  They create the four through CreateX (`0xba5E…ba5Ed`) with salts mined so each address starts 0x6900
+  (`script/place/gen.py`, `src/place/LARPPlan.sol`): an address depends only on its salt, so the burner and IMD Names
+  are each made knowing the other, and the plan holds however the launch is compiled. A salt someone used first is
+  never taken (CREATE3 doesn't bind code to an address): that contract goes to the placement's own CREATE3 address, and
+  the others still find it (`test_ASaltUsedFirstIsNeverTaken`).
+
+  | contract | address |
+  |---|---|
+  | `LARPBurner` | `0x69006faEc2D2094e375cAFA5e3C87C5cB2847bef` |
+  | `LARP` | `0x69000A4A9FA561Dd6b313741bf1F79F4aDE4adAF` |
+  | `IMDNames` | `0x690084D1331F7a6509EeD32e7d34ffAcB377d807` |
+  | `LARPLinks` | `0x69005EdeC64B8586EC8d5E32f757a818b5d493C0` |
+
+Where the sections below say 6.9% or `0x…dEaD`, read the above: 6.9% is the share at launch, and IMD's burn takes
+what went to `0x…dEaD`.

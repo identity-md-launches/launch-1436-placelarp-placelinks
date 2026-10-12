@@ -21,11 +21,11 @@ contract SwarmPricesTest is Base {
     // --- helpers ---
 
     function _p(uint64 s, uint64 f, uint64 l, uint64 c) internal pure returns (SwarmPrices.Prices memory) {
-        return SwarmPrices.Prices(s, f, l, c);
+        return SwarmPrices.Prices(s, f, l, c, 690);
     }
 
     function _now() internal view returns (SwarmPrices.Prices memory p) {
-        (p.short, p.four, p.long, p.crew) = names.prices();
+        (p.short, p.four, p.long, p.crew, p.share) = names.prices();
     }
 
     function _propose(SwarmPrices.Prices memory next) internal returns (bytes32 id) {
@@ -130,16 +130,16 @@ contract SwarmPricesTest is Base {
         assertTrue(
             _contains(
                 question,
-                "Current prices in ETH: 1-3 letter names 0.0069, 4 letter names 0.00169, 5+ letter names 0.00069, crews 0.00069."
+                "Current terms: 1-3 letter names 0.0069 ETH, 4 letter names 0.00169 ETH, 5+ letter names 0.00069 ETH, crews 0.00069 ETH, IMD6900 share 6.9%."
             )
         );
         assertTrue(
             _contains(
                 question,
-                "Proposed prices in ETH: 1-3 letter names 0.005, 4 letter names 0.0012, 5+ letter names 0.0005, crews 0.0005."
+                "Proposed terms: 1-3 letter names 0.005 ETH, 4 letter names 0.0012 ETH, 5+ letter names 0.0005 ETH, crews 0.0005 ETH, IMD6900 share 6.9%."
             )
         );
-        assertTrue(_contains(question, "LARP price proposal #1 "));
+        assertTrue(_contains(question, "LARP proposal #1 "));
         assertEq(vm.parseJsonString(body, ".answerType"), "bool");
         assertEq(vm.parseJsonString(body, ".evidence"), "panel");
         assertEq(vm.parseJsonUint(body, ".panelSize"), 9);
@@ -334,6 +334,200 @@ contract SwarmPricesTest is Base {
                 }
             }
             if (m) return true;
+        }
+        return false;
+    }
+}
+
+/// @dev IMD Names stand-ins for the burner's share read: one that reverts, one that answers more than all, one that
+///      burns all the gas it gets
+contract RevertingShare {
+    function imd6900ShareBps() external pure returns (uint256) {
+        revert("no");
+    }
+}
+
+contract TooMuchShare {
+    function imd6900ShareBps() external pure returns (uint256) {
+        return 10_001;
+    }
+}
+
+contract GasEatingShare {
+    function imd6900ShareBps() external view returns (uint256 s) {
+        while (gasleft() > 100) s++;
+    }
+}
+
+/// @title The IMD6900 share: 6.9% at launch, swarm-voted with the prices, 0 to 100%; the rest goes to IMD's burn
+contract SwarmShareTest is Base {
+    address proposer = makeAddr("proposer");
+
+    function setUp() public {
+        _deploy();
+        _fillPool4();
+        _fillPair();
+        imd.mint(proposer, 100 ether);
+        vm.prank(proposer);
+        imd.approve(address(names), type(uint256).max);
+    }
+
+    function _terms(uint16 share) internal view returns (SwarmPrices.Prices memory p) {
+        (p.short, p.four, p.long, p.crew,) = names.prices();
+        p.share = share;
+    }
+
+    function _yes() internal view returns (Attestation memory a, bytes memory sig) {
+        a = Attestation({
+            requestId: bytes32(bytes16(keccak256("oracle uuid"))),
+            chainId: block.chainid,
+            questionHash: keccak256("the question"),
+            answerType: 0,
+            answer: abi.encode(true),
+            figure: 0,
+            fromBlock: uint64(block.number > 7200 ? block.number - 7200 : 0),
+            toBlock: uint64(block.number),
+            blockHash: blockhash(block.number > 0 ? block.number - 1 : 0),
+            panelJobId: bytes32(bytes16(keccak256("panel job"))),
+            panelSize: 9,
+            quorum: 7,
+            agreed: 9,
+            issuedAt: uint64(vm.getBlockTimestamp()), // not block.timestamp: via-IR may reuse a read from before a warp
+            expiresAt: uint64(vm.getBlockTimestamp() + 1 days)
+        });
+        bytes32 structHash = keccak256(
+            bytes.concat(
+                abi.encode(
+                    keccak256(
+                        "OracleAttestation(bytes32 requestId,uint256 chainId,bytes32 questionHash,uint8 answerType,bytes answer,uint256 figure,uint64 fromBlock,uint64 toBlock,bytes32 blockHash,bytes32 panelJobId,uint16 panelSize,uint16 quorum,uint16 agreed,uint64 issuedAt,uint64 expiresAt)"
+                    ),
+                    a.requestId,
+                    a.chainId,
+                    a.questionHash,
+                    a.answerType,
+                    keccak256(a.answer),
+                    a.figure,
+                    a.fromBlock,
+                    a.toBlock
+                ),
+                abi.encode(a.blockHash, a.panelJobId, a.panelSize, a.quorum, a.agreed, a.issuedAt, a.expiresAt)
+            )
+        );
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("IdentityMD Oracle"),
+                keccak256("2"),
+                block.chainid,
+                address(names)
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(oracleKey, keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
+        sig = abi.encodePacked(r, s, v);
+    }
+
+    /// @dev Proposes, approves and applies a share, a week after the last change
+    function _set(uint16 share) internal {
+        SwarmPrices.Prices memory next = _terms(share); // read before the prank: a read would take it
+        vm.prank(proposer);
+        bytes32 id = names.propose(next, 0.5 ether);
+        (Attestation memory a, bytes memory sig) = _yes();
+        intake.deliver(id, a, sig);
+        names.execute(id);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+    }
+
+    /// @dev Burns `amount` $IMD through the burner; returns what reached IMD's burn
+    function _burn(uint256 amount) internal returns (uint256 toImdBurn) {
+        uint256 before = imd.balanceOf(burner.IMD_BURN());
+        imd.mint(address(burner), amount);
+        burner.burnImd{gas: 10_000_000}();
+        toImdBurn = imd.balanceOf(burner.IMD_BURN()) - before;
+    }
+
+    function test_StartsAt6Point9AndTheBurnerReadsItFromIMDNames() public {
+        assertEq(burner.NAMES(), address(names), "the burner knows IMD Names");
+        assertEq(names.imd6900ShareBps(), 690);
+        assertEq(burner.shareBps(), 690);
+        assertEq(_burn(1000 ether), 1000 ether - 69 ether, "93.1% to IMD's burn");
+        assertEq(imd.balanceOf(0x000000000000000000000000000000000000dEaD), 0, "nothing parked at 0x..dEaD");
+    }
+
+    function test_TheSwarmMovesTheShareAndTheBurnerFollows() public {
+        _set(1380);
+        assertEq(names.imd6900ShareBps(), 1380);
+        assertEq(burner.shareBps(), 1380);
+        assertEq(_burn(1000 ether), 1000 ether - 138 ether, "86.2% to IMD's burn");
+    }
+
+    function test_UpToAllOfIt() public {
+        _set(1380);
+        _set(2760);
+        _set(5520);
+        _set(10_000);
+        assertEq(burner.shareBps(), 10_000);
+        uint256 supply = imd6900.totalSupply();
+        assertEq(_burn(1000 ether), 0, "all of it bought IMD6900: nothing left for IMD's burn");
+        assertLt(imd6900.totalSupply(), supply, "and the IMD6900 was burned");
+    }
+
+    function test_AndDownToNothing() public {
+        _set(345);
+        _set(173); // half, rounded up: 172 would be less than half
+        _set(87);
+        _set(0); // the last point
+        assertEq(burner.shareBps(), 0);
+        assertEq(_burn(1000 ether), 1000 ether, "all of it to IMD's burn");
+    }
+
+    function test_ShareGuardrails() public {
+        SwarmPrices.Prices memory tooHigh = _terms(1381); // more than 2x
+        SwarmPrices.Prices memory tooLow = _terms(344); // less than half, more than a point
+        SwarmPrices.Prices memory overAll = _terms(10_001); // more than all
+        SwarmPrices.Prices memory point = _terms(790); // a point
+        SwarmPrices.Prices memory twice = _terms(1380); // 2x
+        SwarmPrices.Prices memory half = _terms(345); // half
+        vm.startPrank(proposer);
+        vm.expectRevert(SwarmPrices.OutOfBounds.selector);
+        names.propose(tooHigh, 0.5 ether);
+        vm.expectRevert(SwarmPrices.OutOfBounds.selector);
+        names.propose(tooLow, 0.5 ether);
+        vm.expectRevert(SwarmPrices.OutOfBounds.selector);
+        names.propose(overAll, 0.5 ether);
+        names.propose(point, 0.5 ether);
+        names.propose(twice, 0.5 ether);
+        names.propose(half, 0.5 ether);
+        vm.stopPrank();
+    }
+
+    function test_TheQuestionNamesTheShare() public {
+        SwarmPrices.Prices memory next = _terms(1380);
+        vm.prank(proposer);
+        names.propose(next, 0.5 ether);
+        bytes memory body = intake.lastBody();
+        assertTrue(_contains(string(body), "IMD6900 share 6.9%"), "the current share");
+        assertTrue(_contains(string(body), "IMD6900 share 13.8%"), "the proposed share");
+        assertTrue(_contains(string(body), "the IMD6900 share is between 0% and 100%"), "the guideline");
+    }
+
+    function test_TheBurnerFallsBackTo6Point9() public {
+        assertEq(_newBurner(address(pm), address(0)).shareBps(), 690, "no IMD Names");
+        assertEq(_newBurner(address(pm), makeAddr("nothing there")).shareBps(), 690, "no code");
+        assertEq(_newBurner(address(pm), address(new RevertingShare())).shareBps(), 690, "reverts");
+        assertEq(_newBurner(address(pm), address(new TooMuchShare())).shareBps(), 690, "more than all");
+        assertEq(_newBurner(address(pm), address(new GasEatingShare())).shareBps(), 690, "eats its gas");
+    }
+
+    function _contains(string memory hay, string memory needle) internal pure returns (bool) {
+        bytes memory h = bytes(hay);
+        bytes memory n = bytes(needle);
+        if (n.length > h.length) return false;
+        for (uint256 i; i <= h.length - n.length; ++i) {
+            bool ok = true;
+            for (uint256 j; j < n.length && ok; ++j) {
+                ok = h[i + j] == n[j];
+            }
+            if (ok) return true;
         }
         return false;
     }

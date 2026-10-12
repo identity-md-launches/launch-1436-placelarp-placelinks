@@ -65,7 +65,7 @@ contract IMDNames is ERC721, IIMDNames, SwarmPrices {
     /// @param intake IMD's oracle Intake
     /// @param oracleSigner IMD's oracle signer
     constructor(address identity, ILARP larp, address burner, address artist_, address intake, address oracleSigner)
-        SwarmPrices(intake, oracleSigner, Prices(0.0069 ether, 0.00169 ether, 0.00069 ether, 0.00069 ether))
+        SwarmPrices(intake, oracleSigner, Prices(0.0069 ether, 0.00169 ether, 0.00069 ether, 0.00069 ether, 690))
     {
         if (identity == address(0) || address(larp) == address(0) || burner == address(0)) revert ZeroAddress();
         IDENTITY = identity;

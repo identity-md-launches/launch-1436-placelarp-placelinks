@@ -53,7 +53,8 @@ contract IMDNamesEdgesTest is Base {
         IMDNames noArtist =
             new IMDNames(address(identity), larp, address(burner), address(0), address(intake), oracleSigner);
         assertEq(noArtist.artist(), address(0));
-        vm.prank(address(0));
+        // nobody can then set it: no transaction comes from address(0), and any other caller isn't the artist
+        vm.prank(makeAddr("anyone"));
         vm.expectRevert(IIMDNames.NotArtist.selector);
         noArtist.setRenderer(address(1));
     }

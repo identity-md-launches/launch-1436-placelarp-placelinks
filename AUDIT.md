@@ -25,9 +25,10 @@ by a test that fails without the fix (see `ADAPTATION.md`). The rest acknowledge
 | the names' renderer | the artist, until locked | art only; a failing renderer falls back to the built-in card |
 | IMD's oracle (attester `0x5598…2982`, Intake `0xa43e…de82`, owned by IMD's treasury) | IMD | price changes only. A verdict needs its signature, for this contract, on the contract's own proposal; a bad one can move prices at most 2x a week, within 0.00001-1 ETH and short >= long. If IMD stops answering, prices stay. |
 
-**Not used, on purpose:** IMD's BurnExecutor (`0xe293…c750`). Its owner can `rescueToken`, `rescueETH` and redirect
-the burn (`setBaseBurnReceiver`), so $IMD sent there isn't trustlessly burned. LARP sends to `0x…dEaD` instead. The
-cost: IMD's dashboard won't count these burns as IMD's own.
+**Used since v2 (2026-10-12), at the user's choice: IMD's BurnExecutor (`0xe293…c750`, `LARPBurner.IMD_BURN`).**
+Its owner (IMD, `0x047F…54B7`) can `rescueToken`, `rescueETH`, `setBaseBurnReceiver` and `setBridgeConfig`, so $IMD
+sent there is burned on IMD's word, as every other $IMD burn is: anyone bridges what it holds to Base, where a contract
+with no owner burns it. `0x…dEaD` was trustless but never lowered $IMD's supply.
 
 ## Fixed
 
@@ -216,3 +217,17 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
 - **Merkle proofs** and **placement bookkeeping** as before (`test_AnInnerNodeIsNotALeaf`, three invariants).
 - **Launch constraints.** The constructors call nothing, and no CALLCODE / DELEGATECALL / SELFDESTRUCT appears anywhere.
   The four contracts take about 8.6M gas together, in one transaction (`test/Launch.t.sol`).
+
+## v2 (2026-10-12)
+
+- **The IMD6900 share is swarm-voted** (IMD Names' `SwarmPrices`, with the prices: 6.9% to start, 0-100%, at most 2x or
+  one point per change, one change a week). The burner reads it with a 30k-gas staticcall and falls back to 6.9% if IMD
+  Names is missing, reverts, eats the gas or answers more than 100% (`test_TheBurnerFallsBackTo6Point9`). At 100% nothing
+  reaches IMD's burn unless the IMD6900 buy fails; at 0% nothing buys IMD6900 (`test_UpToAllOfIt`,
+  `test_AndDownToNothing`).
+- **$IMD goes to IMD's BurnExecutor**, not `0x…dEaD` (above). Read the trust rows' `0x…dEaD` as IMD's burn.
+- **Placement by CREATE3** (README, v2): no IMD protocol address is a launch constructor argument; a salt used first is
+  never taken (`test_ASaltUsedFirstIsNeverTaken`); a chain without CreateX gets the placements' own CREATE3
+  (`test_DeploysOnAFreshChain`).
+- **Tests:** 290, all pass (with MAINNET_RPC_URL: the fork's, including the launch landing at 0x6900… through the real
+  CreateX and a name burning the canonical way). The fuzz seed is fixed (foundry.toml) so every run draws the same cases.
