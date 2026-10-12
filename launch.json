@@ -1,0 +1,14 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "PlaceLARP",
+      "constructorArgs": []
+    },
+    {
+      "contract": "PlaceLinks",
+      "constructorArgs": ["$contract:PlaceLARP"]
+    }
+  ],
+  "notes": "Deploy on Ethereum in the listed order. PlaceLARP creates LARPBurner, LARP and IMDNames; PlaceLinks creates LARPLinks using the earlier PlaceLARP deployment. Constructors use the fixed arguments and CREATE3 salts in src/place/LARPPlan.sol (README v2). CreateX places the four contracts at the planned 0x6900 addresses when available and unused; absent CreateX or an occupied proxy or destination selects the placer's own CREATE3. Read burner, larp and names from PlaceLARP and links from PlaceLinks for the actual addresses."
+}
