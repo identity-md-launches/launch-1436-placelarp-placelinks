@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Base, MockIMD6900} from "./Base.sol";
 import {LARPBurner} from "../src/LARPBurner.sol";
+import {IMDNames} from "../src/IMDNames.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {PoolIdLibrary, PoolKey as V4PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -119,7 +120,17 @@ contract LARPBurnerTest is Base {
     function test_SpacingAboveV4sLargestReverts() public {
         vm.expectRevert(LARPBurner.BadSpacing.selector);
         new LARPBurner(
-            address(pm), address(imd), 10_000, 32_768, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            32_768,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         vm.expectRevert(LARPBurner.BadSpacing.selector);
@@ -138,7 +149,17 @@ contract LARPBurnerTest is Base {
             address(0)
         );
         LARPBurner ok = new LARPBurner(
-            address(pm), address(imd), 10_000, 32_767, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            32_767,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
         assertEq(int256(ok.POOL4_SPACING()), 32_767);
@@ -390,7 +411,17 @@ contract LARPBurnerTest is Base {
         adder.add(heavyPair, 1e23);
         _fillPool4();
         b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(token), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            60,
+            address(0),
+            10_000,
+            200,
+            address(token),
+            0,
+            60,
+            address(0),
             address(0)
         );
     }
@@ -495,8 +526,7 @@ contract LARPBurnerTest is Base {
         adder.add{value: 1_000 ether}(hooked, 1e21);
         _fillBackup();
         LARPBurner b = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, hog, 10_000, 200, address(imd6900), 0, 60, address(0),
-            address(0)
+            address(pm), address(imd), 10_000, 60, hog, 10_000, 200, address(imd6900), 0, 60, address(0), address(0)
         );
         vm.expectEmit(true, false, true, false, address(b));
         emit Bought(0.05 ether, 0, 1);
@@ -514,5 +544,42 @@ contract LARPBurnerTest is Base {
         evil.aim(b);
         b.burn{value: 0.01 ether}(0);
         assertEq(bytes4(evil.lastError()), LARPBurner.Reentered.selector);
+    }
+
+    function test_HostileLegsCostPaidCallsTheirBudgets() public {
+        GasHogIMD6900 token = new GasHogIMD6900();
+        _burnerOn(token); // Fund this token's pair and the normal ETH pool.
+        _fillBackup();
+        address hog = address(uint160((1 << 159) | 0x80));
+        vm.etch(hog, address(new GasHogHook()).code);
+        V4PoolKey memory hooked =
+            V4PoolKey(Currency.wrap(address(0)), Currency.wrap(address(imd)), 10_000, 60, IHooks(hog));
+        pm.initialize(hooked, TickMath.getSqrtPriceAtTick(76_020));
+        adder.add{value: 1_000 ether}(hooked, 1e21);
+        LARPBurner b = new LARPBurner(
+            address(pm), address(imd), 10_000, 60, hog, 10_000, 200, address(token), 0, 60, address(0), address(0)
+        );
+        IMDNames n = new IMDNames(address(identity), larp, address(b), artist, address(intake), oracleSigner);
+        bytes32 label = bytes32("frens");
+        uint256 price = n.priceOf(label);
+        bytes memory call = abi.encodeCall(IMDNames.register, (label, alice, 0));
+        (bool ok, bytes memory result) = address(n).call{value: price, gas: 3_400_000}(call);
+        assertFalse(ok, "the usual gas limit cannot fund both hostile legs");
+        assertEq(bytes4(result), LARPBurner.TooLittleGas.selector);
+        assertEq(n.balanceOf(alice), 0, "the mint and payment rolled back");
+        assertEq(address(b).balance, 0);
+        assertEq(imd.balanceOf(IMD_BURN), 0);
+
+        uint256 gasBefore = gasleft();
+        (ok, result) = address(n).call{value: price, gas: 6_800_000}(call);
+        uint256 used = gasBefore - gasleft();
+        assertTrue(ok, "enough gas pays both budgets and falls back");
+        emit log_named_uint("registration gas used with two hostile legs", used);
+        assertGt(used, 5_500_000, "each hostile leg consumes almost all of its 3M budget");
+        assertLt(used, 6_800_000);
+        assertEq(n.ownerOf(abi.decode(result, (uint256))), alice);
+        assertGt(imd.balanceOf(IMD_BURN), 0, "the failed pair's share goes to the executor too");
+        assertEq(address(b).balance, 0);
+        assertEq(imd.balanceOf(address(b)), 0);
     }
 }

@@ -177,13 +177,13 @@ abstract contract SwarmPrices {
     }
 
     /// @notice IMD's Intake delivers the swarm's verdict on one of this contract's own proposals. It counts as an
-    /// approval only if IMD's oracle signed it for this contract, the answer is `true`, the panel had at least
+    /// approval only if IMD's oracle signed it for this contract and this request, the answer is `true`, the panel had at least
     /// MIN_PANEL members and at least MIN_QUORUM of them (and 7 in 9) gave it, and it hasn't expired.
     function onVerdict(bytes32 requestId, Attestation calldata a, bytes calldata signature) external {
         if (msg.sender != INTAKE) revert NotIntake();
         Proposal storage p = _proposals[requestId];
         if (p.status != Status.Pending) revert NotPending();
-        if (!_signedByOracle(a, signature)) revert BadVerdictSignature();
+        if (a.requestId != requestId || !_signedByOracle(a, signature)) revert BadVerdictSignature();
         bool approved = a.answerType == 0 && a.chainId == block.chainid && a.panelSize >= MIN_PANEL
             && a.quorum >= MIN_QUORUM && uint256(a.quorum) * 9 >= uint256(a.panelSize) * 7 && a.agreed >= a.quorum
             && block.timestamp <= a.expiresAt && a.answer.length == 32 && uint256(bytes32(a.answer)) == 1;
@@ -322,7 +322,12 @@ abstract contract SwarmPrices {
     function _pct(uint256 bps) internal pure returns (string memory) {
         uint256 frac = bps % 100;
         if (frac == 0) return string.concat(_decimal(bps / 100), "%");
-        return string.concat(_decimal(bps / 100), ".", frac % 10 == 0 ? _decimal(frac / 10) : (frac < 10 ? string.concat("0", _decimal(frac)) : _decimal(frac)), "%");
+        return string.concat(
+            _decimal(bps / 100),
+            ".",
+            frac % 10 == 0 ? _decimal(frac / 10) : (frac < 10 ? string.concat("0", _decimal(frac)) : _decimal(frac)),
+            "%"
+        );
     }
 
     /// @dev Wei as a decimal ETH amount: 690000000000000 -> "0.00069".

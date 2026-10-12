@@ -125,7 +125,7 @@ contract SwarmHandler is Test {
         ttl = bound(ttl, 0, 2 days);
         bool expired = ttl == 0;
         uint64 expiresAt = uint64(expired ? block.timestamp - 1 : block.timestamp + ttl);
-        (Attestation memory a, bytes memory sig) = _attest(yes, panel, quorum, agreed, expiresAt, oracleKey);
+        (Attestation memory a, bytes memory sig) = _attest(id, yes, panel, quorum, agreed, expiresAt, oracleKey);
         bool strong = yes && panel >= 9 && quorum >= 7 && uint256(quorum) * 9 >= uint256(panel) * 7 && agreed >= quorum
             && !expired;
         SwarmPrices.Status before = names.proposal(id).status;
@@ -152,8 +152,8 @@ contract SwarmHandler is Test {
         if (ids.length == 0) return;
         bytes32 id = ids[which % ids.length];
         (Attestation memory a, bytes memory sig) = otherKey
-            ? _attest(true, 9, 7, 9, uint64(block.timestamp + 1 days), 0xBAD)
-            : _attestFor(true, 9, 7, 9, uint64(block.timestamp + 1 days), oracleKey, address(intake));
+            ? _attest(id, true, 9, 7, 9, uint64(block.timestamp + 1 days), 0xBAD)
+            : _attestFor(id, true, 9, 7, 9, uint64(block.timestamp + 1 days), oracleKey, address(intake));
         SwarmPrices.Status before = names.proposal(id).status;
         bool ok = intake.deliver(id, a, sig);
         assertFalse(ok, "a forged verdict was taken");
@@ -165,7 +165,8 @@ contract SwarmHandler is Test {
     function stranger(uint256 which, uint256 who) external {
         if (ids.length == 0) return;
         bytes32 id = ids[which % ids.length];
-        (Attestation memory a, bytes memory sig) = _attest(true, 9, 7, 9, uint64(block.timestamp + 1 days), oracleKey);
+        (Attestation memory a, bytes memory sig) =
+            _attest(id, true, 9, 7, 9, uint64(block.timestamp + 1 days), oracleKey);
         vm.prank(proposers[who % 3]);
         vm.expectRevert(SwarmPrices.NotIntake.selector);
         names.onVerdict(id, a, sig);
@@ -247,15 +248,20 @@ contract SwarmHandler is Test {
         return to.short >= to.four && to.four >= to.long;
     }
 
-    function _attest(bool yes, uint16 panel, uint16 quorum, uint16 agreed, uint64 expiresAt, uint256 key)
-        internal
-        view
-        returns (Attestation memory, bytes memory)
-    {
-        return _attestFor(yes, panel, quorum, agreed, expiresAt, key, address(names));
+    function _attest(
+        bytes32 requestId,
+        bool yes,
+        uint16 panel,
+        uint16 quorum,
+        uint16 agreed,
+        uint64 expiresAt,
+        uint256 key
+    ) internal view returns (Attestation memory, bytes memory) {
+        return _attestFor(requestId, yes, panel, quorum, agreed, expiresAt, key, address(names));
     }
 
     function _attestFor(
+        bytes32 requestId,
         bool yes,
         uint16 panel,
         uint16 quorum,
@@ -265,7 +271,7 @@ contract SwarmHandler is Test {
         address forContract
     ) internal view returns (Attestation memory a, bytes memory sig) {
         a = Attestation({
-            requestId: keccak256(abi.encode("uuid", verdicts, block.timestamp)),
+            requestId: requestId,
             chainId: block.chainid,
             questionHash: keccak256("the question"),
             answerType: 0,

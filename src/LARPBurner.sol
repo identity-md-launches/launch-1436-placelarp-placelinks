@@ -204,15 +204,11 @@ contract LARPBurner {
         _unwrapWeth();
         uint256 own = msg.value < MAX_BURN ? msg.value : MAX_BURN;
         uint256 waiting = address(this).balance - own;
+        uint256 spent = _burnBlock == uint64(block.number) ? _burnedInBlock : 0;
         if (waiting != 0) {
             uint256 room = MAX_BURN - own;
-            uint256 spent = _burnBlock == uint64(block.number) ? _burnedInBlock : 0;
             if (room > MAX_BURN - spent) room = MAX_BURN - spent;
             if (waiting > room) waiting = room;
-            if (waiting != 0) {
-                _burnBlock = uint64(block.number);
-                _burnedInBlock = uint192(spent + waiting);
-            }
         }
         uint256 eth = own + waiting;
         if (eth != 0) {
@@ -220,6 +216,11 @@ contract LARPBurner {
                 (bool ok, bytes memory result) = _tryUnlock(route, eth);
                 if (ok) {
                     imd = abi.decode(result, (uint256));
+                    // Only ETH actually sold consumes the block's allowance. The lock covers both routes.
+                    if (waiting != 0) {
+                        _burnBlock = uint64(block.number);
+                        _burnedInBlock = uint192(spent + waiting);
+                    }
                     emit Bought(eth, imd, route);
                     break;
                 }
@@ -277,6 +278,8 @@ contract LARPBurner {
         int128 ethDelta = int128(d >> 128);
         int128 bought = int128(d);
         if (ethDelta != -int128(int256(amount)) || bought <= 0) revert Unfilled();
+        // sync is permissionless and persists for the transaction: clear any prior ERC-20 sync before paying ETH.
+        POOL_MANAGER.sync(address(0));
         POOL_MANAGER.settle{value: amount}();
         POOL_MANAGER.take(IMD, address(this), uint128(bought));
         return abi.encode(uint256(uint128(bought)));

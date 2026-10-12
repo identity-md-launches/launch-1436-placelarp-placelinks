@@ -311,8 +311,8 @@ contract BurnerHandler is Test {
         ethToPm += spent;
         imdFromPm += bought;
         if (spent == 0 && expectSpend != 0) ++parked;
-        // the block's allowance: the burner books the waiting ETH it took whether or not a route then took the trade
-        if (fromWaiting != 0) {
+        // Only a measured sale consumes the block's allowance; a parked attempt leaves room for a later retry.
+        if (spent != 0 && fromWaiting != 0) {
             modelTaken = (modelBlock == vm.getBlockNumber() ? modelTaken : 0) + fromWaiting;
             modelBlock = vm.getBlockNumber();
         }
@@ -395,7 +395,17 @@ contract LARPBurnerInvariantTest is Test {
         pm.initialize(pair, TickMath.getSqrtPriceAtTick(imdIs0 ? int24(92_100) : int24(-92_100)));
 
         burner = new LARPBurner(
-            address(pm), address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
+            address(pm),
+            address(imd),
+            10_000,
+            60,
+            address(0),
+            10_000,
+            200,
+            address(imd6900),
+            0,
+            60,
+            address(0),
             address(0)
         );
 

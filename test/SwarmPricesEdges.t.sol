@@ -29,13 +29,16 @@ contract SwarmPricesEdgesTest is Base {
         id = names.propose(next, 0.5 ether);
     }
 
-    function _attest(bool yes, uint8 answerType, bytes memory answer, uint256 chainId, uint64 expiresAt)
-        internal
-        view
-        returns (Attestation memory a, bytes memory sig)
-    {
+    function _attest(
+        bytes32 requestId,
+        bool yes,
+        uint8 answerType,
+        bytes memory answer,
+        uint256 chainId,
+        uint64 expiresAt
+    ) internal view returns (Attestation memory a, bytes memory sig) {
         a = Attestation({
-            requestId: bytes32(bytes16(keccak256("uuid"))),
+            requestId: requestId,
             chainId: chainId,
             questionHash: keccak256("q"),
             answerType: answerType,
@@ -143,23 +146,23 @@ contract SwarmPricesEdgesTest is Base {
             ids[i] = _propose(_p(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether));
         }
         uint64 ttl = uint64(block.timestamp + 1 days);
-        (Attestation memory a, bytes memory sig) = _attest(true, 3, "", block.chainid, ttl); // a uint256 answer
+        (Attestation memory a, bytes memory sig) = _attest(ids[0], true, 3, "", block.chainid, ttl); // a uint256 answer
         assertTrue(intake.deliver(ids[0], a, sig));
         assertEq(uint8(_status(ids[0])), uint8(SwarmPrices.Status.Rejected), "not a bool");
-        (a, sig) = _attest(true, 0, abi.encode(uint256(2)), block.chainid, ttl); // a "bool" that is not 0 or 1
+        (a, sig) = _attest(ids[1], true, 0, abi.encode(uint256(2)), block.chainid, ttl); // a "bool" that is not 0 or 1
         assertTrue(intake.deliver(ids[1], a, sig));
         assertEq(uint8(_status(ids[1])), uint8(SwarmPrices.Status.Rejected), "not true");
-        (a, sig) = _attest(true, 0, abi.encode(true, true), block.chainid, ttl); // two words
+        (a, sig) = _attest(ids[2], true, 0, abi.encode(true, true), block.chainid, ttl); // two words
         assertTrue(intake.deliver(ids[2], a, sig));
         assertEq(uint8(_status(ids[2])), uint8(SwarmPrices.Status.Rejected), "not one word");
-        (a, sig) = _attest(true, 0, "", block.chainid + 1, ttl); // about another chain
+        (a, sig) = _attest(ids[3], true, 0, "", block.chainid + 1, ttl); // about another chain
         assertTrue(intake.deliver(ids[3], a, sig));
         assertEq(uint8(_status(ids[3])), uint8(SwarmPrices.Status.Rejected), "another chain");
     }
 
     function test_AVerdictExpiringThisSecondStillCounts() public {
         bytes32 id = _propose(_p(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether));
-        (Attestation memory a, bytes memory sig) = _attest(true, 0, "", block.chainid, uint64(block.timestamp));
+        (Attestation memory a, bytes memory sig) = _attest(id, true, 0, "", block.chainid, uint64(block.timestamp));
         assertTrue(intake.deliver(id, a, sig));
         assertEq(uint8(_status(id)), uint8(SwarmPrices.Status.Approved));
         assertEq(names.proposal(id).decidedAt, block.timestamp);
@@ -167,7 +170,7 @@ contract SwarmPricesEdgesTest is Base {
 
     function test_AFailureAfterAVerdictIsRefused() public {
         bytes32 id = _propose(_p(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether));
-        (Attestation memory a, bytes memory sig) = _attest(false, 0, "", block.chainid, uint64(block.timestamp + 1));
+        (Attestation memory a, bytes memory sig) = _attest(id, false, 0, "", block.chainid, uint64(block.timestamp + 1));
         intake.deliver(id, a, sig);
         assertFalse(intake.fail(id, 1, bytes32("body_invalid")), "settled: NotPending");
         assertEq(uint8(_status(id)), uint8(SwarmPrices.Status.Rejected));
@@ -180,10 +183,14 @@ contract SwarmPricesEdgesTest is Base {
     function test_TwoProposalsOneVerdictEach() public {
         bytes32 first = _propose(_p(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether));
         bytes32 second = _propose(_p(0.006 ether, 0.0015 ether, 0.0006 ether, 0.0006 ether));
-        (Attestation memory a, bytes memory sig) = _attest(true, 0, "", block.chainid, uint64(block.timestamp + 1));
+        (Attestation memory a, bytes memory sig) =
+            _attest(first, true, 0, "", block.chainid, uint64(block.timestamp + 1));
         assertTrue(intake.deliver(first, a, sig));
-        assertTrue(intake.deliver(second, a, sig), "the same signed answer may settle the other pending proposal: L-08");
-        assertFalse(intake.deliver(first, a, sig), "but never the same one twice");
+        assertFalse(intake.deliver(second, a, sig), "a signature for the first proposal cannot settle the second");
+        assertEq(uint8(_status(second)), uint8(SwarmPrices.Status.Pending));
+        assertFalse(intake.deliver(first, a, sig), "never the same one twice");
+        (a, sig) = _attest(second, true, 0, "", block.chainid, uint64(block.timestamp + 1));
+        assertTrue(intake.deliver(second, a, sig), "the second proposal needs its own verdict");
         assertEq(names.proposal(first).number, 1);
         assertEq(names.proposal(second).number, 2);
     }
@@ -192,7 +199,8 @@ contract SwarmPricesEdgesTest is Base {
 
     function _approved(SwarmPrices.Prices memory next) internal returns (bytes32 id) {
         id = _propose(next);
-        (Attestation memory a, bytes memory sig) = _attest(true, 0, "", block.chainid, uint64(block.timestamp + 1 days));
+        (Attestation memory a, bytes memory sig) =
+            _attest(id, true, 0, "", block.chainid, uint64(block.timestamp + 1 days));
         intake.deliver(id, a, sig);
     }
 
@@ -284,6 +292,7 @@ contract SwarmPricesEdgesTest is Base {
         v = IMDNames(VECTOR_CONSUMER);
         vm.prank(proposer);
         imd.approve(address(v), type(uint256).max);
+        intake.setNextRequestId(_vector().requestId);
         vm.prank(proposer);
         id = v.propose(_p(0.005 ether, 0.0012 ether, 0.0005 ether, 0.0005 ether), 0.5 ether);
     }

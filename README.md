@@ -97,7 +97,7 @@ reverse lookup.
    **A verdict counts only if:**
    - at least 7 of the 9 agents gave the same answer;
    - IMD's oracle signed it for this contract;
-   - it answers one of the contract's own proposals;
+   - its signed request ID matches the specific pending proposal receiving it;
    - it hasn't expired.
 3. **Anyone executes** an approved proposal with `execute(requestId)`:
    - at most one change a week;
@@ -112,30 +112,34 @@ reverse lookup.
 **Trust:** a verdict rests on IMD's oracle signer and its swarm panel. The guardrails cap the damage of a bad verdict
 to a slow drift. If IMD stops answering, prices just stay where they are.
 
-**Tested:** IMD's own validator accepts the question the contract writes. A proposal went through IMD's real Intake on
-a mainnet fork.
+**Prior project validation:** IMD's validator accepted the question the contract writes, and a proposal went through
+IMD's real Intake on a mainnet fork. This adaptation's offline results and fork requirements are recorded below.
 
 ## The burner (LARPBurner)
 
 `burn(minImd)` spends the ETH waiting, up to 0.1 ETH a call, and of the ETH that was already waiting at most 0.1 ETH a
 block (a caller's own fee always goes through). WETH royalties are unwrapped first. Anyone can call it, and fees call it
-on the way in; a call needs a gas limit of about 3.4M (each leg that runs a hook or IMD6900 gets a fixed 3M budget, so
-nobody can starve it and nothing it calls can halt it).
+on the way in. About 3.4M gas is a healthy-path estimate, not a universal limit: each leg that runs a hook or
+IMD6900 must be funded for its fixed 3M budget. A hostile leg can consume that budget on every paid call; two hostile
+legs can cost about 6M gas plus overhead (6.8M is exercised by the local registration regression). Use a fresh gas
+estimate. Insufficient caller gas reverts the whole payment; a fully funded hostile leg is skipped. A genuinely
+parked attempt does not consume the block's waiting-ETH allowance. Native settlement resets PoolManager's synced
+currency so a caller's earlier ERC-20 `sync` cannot park the fee.
 1. **POOL4,** IMD's ETH/$IMD pool (1%, spacing 60): the volume goes there.
 2. **If POOL4 can't take the trade** (IMD closed it, it's empty, its hook refuses), the **hookless ETH/$IMD pool**
    (1%, spacing 200), which nobody can close. It has about 23x POOL4's liquidity.
 3. **If neither can,** the ETH waits for the next `burn`. It is never sent to anyone.
 
 **Then the $IMD** (bought, or paid in $IMD through `burnImd`) is split:
-- **6.9% (`POOL_SHARE_BPS`) buys IMD6900** on the IMD6900/$IMD pool, buying pressure, and is burned with IMD6900's
+- **The swarm-voted share (initially 6.9%, `POOL_SHARE_BPS`) buys IMD6900** on the IMD6900/$IMD pool, buying pressure, and is burned with IMD6900's
   own `burn`, so its supply drops. If that buy can't happen, the share joins the rest.
-- **The rest goes to `0x…dEaD`.**
+- **The rest goes to IMD's BurnExecutor (`IMD_BURN`), including the share if the pair buy fails.**
 
 **Paying in $IMD:** `quoteImd(eth)` is the price in $IMD. It is the higher of POOL4's and the hookless pool's spot
 quotes, so moving one pool can't make anything cheaper. Both pools must be live; otherwise pay in ETH.
 
-**Why not IMD's BurnExecutor:** its owner can rescue the tokens and redirect the burn. `0x…dEaD` can't be undone by
-anyone. `AUDIT.md` lists every dependency and what happens if each one fails.
+**BurnExecutor trust:** its IMD owner can rescue the tokens and redirect the burn. This is the canonical burn
+requested for v2; LARP sends no $IMD to `0x…dEaD`. `AUDIT.md` lists the dependencies and failure behavior.
 
 ## Links (LARPLinks)
 
@@ -152,33 +156,40 @@ anyone. `AUDIT.md` lists every dependency and what happens if each one fails.
 
 | contract | constructor arguments |
 |---|---|
-| `LARPBurner` | PoolManager `0x000000000004444c5dc75cB358380D2e3dE08A90`; $IMD `0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7`; `10000`, `60`, POOL4's hook `0xc6C965Bd164c483e87d0B550671798e9A3602840`; `10000`, `200` (the hookless pool); IMD6900 `0x0000198C940D8cD70Cb9ACeC5E3af8216ac57d2F`, `0`, `60`, the pair hook `0x667f4621030aCfAfb1bD0B64d33610A8567f2A44` |
-| `LARP` | identity.md `0x0000eC93127BAA929E58E97dd0095A2BFb38ec1D` |
-| `IMDNames` | identity.md; `$contract:LARP`; `$contract:LARPBurner`; the artist `0x35dA9C0303507ddf708E87F2568EdDf12c47a059`; IMD's oracle Intake `0xa43e6F75ee006411F79Ac1C84120606C2330DE82`; IMD's oracle signer `0x5598Aa9146215Bc13eb26f2c692Ad1461Fd32982` |
-| `LARPLinks` | identity.md; IMD's launcher `0xfF03410d0Fe5fa8f7F59F743de35E333D9857120`; `$contract:LARP`; `$contract:IMDNames`; `$contract:LARPBurner` |
+| `PlaceLARP` | none |
+| `PlaceLinks` | `$contract:PlaceLARP` |
 
-- The constructors store addresses and call nothing.
-- No CALLCODE, DELEGATECALL or SELFDESTRUCT anywhere.
-- About 8.6M gas for all four, in one transaction.
+These nonpayable constructors create `LARPBurner`, `LARP`, `IMDNames`, and `LARPLinks` using exactly the fixed
+arguments, salts and planned addresses in `src/place/LARPPlan.sol`. The burner and names are wired to each other;
+links reads the earlier placement's actual results. No IMD protocol address, owner or initializer is a launch argument.
+The artist is the plan's fixed `0x35dA9C0303507ddf708E87F2568EdDf12c47a059`, with metadata authority only.
+
+- On Ethereum, free salts use CreateX. An occupied proxy or destination uses that placement's own CREATE3 instead.
+- On a fresh chain without CreateX, both placements use their own CREATE3. The four application constructors call
+  no external dependency; PlaceLinks reads only the earlier PlaceLARP.
+- No CALLCODE, DELEGATECALL or SELFDESTRUCT in the deployed applications or placement contracts.
+- `test/Placement.t.sol` checks initcode/runtime admission and the combined transaction's gas, including overhead.
 
 ## Tests and audit
 
 ```sh
-forge test --offline                                           # 150 tests: local v4 pools, a mock Intake and oracle key
-MAINNET_RPC_URL=<rpc> forge test --match-contract MainnetFork  # 11 more on Ethereum: the real pools, proofs, IMD's Intake
+forge build
+forge test --offline  # 290 total: 277 pass locally; 13 explicitly skip without an RPC
+MAINNET_RPC_URL=<rpc> forge test --match-contract 'MainnetForkTest|PlacementForkTest'
 ```
 
-On the fork:
-- **POOL4:** a 0.0069 ETH name fee sends 1.81 $IMD to `0x…dEaD`, and buys and burns 16,849 IMD6900 on the
+The original project reports these historical fork observations; this adaptation did not re-run them:
+- **POOL4:** a 0.0069 ETH name fee sends 1.81 $IMD to the burn destination, and buys and burns 16,849 IMD6900 on the
   IMD6900/$IMD pool with the other 6.9%.
-- **Paying in $IMD:** a 5+ letter name costs 1.81 $IMD at today's price.
+- **Paying in $IMD:** a 5+ letter name costs 1.81 $IMD at that fork's price.
 - **The hookless pool** takes over when POOL4 can't (0.05 ETH buys 12.8 $IMD).
 - **A resold name's toll** is burned.
 - **An agent key** runs the IMD6900 treasury's #806.
 - **The jeet board** reads real swarm proofs: a Jeet Lord, and the treasury at Diamond Hands, level 4.
 
-`AUDIT.md`: no critical, high or medium findings. Two lows are fixed with tests; the rest are documented, with the
-full trust table.
+`AUDIT.md` records the existing fixes and the two reproduced adaptation fixes, with the trust table.
+`ADAPTATION.md` records commands and results. `AUDIT-COVERAGE.md` answers every listed entry point, including both
+ERC721 safe-transfer overloads; reading coverage is separate from live dependency validation.
 
 Libraries under `lib/`: solady's `ERC721` and `Base64` and v4-core's `FullMath` (MIT) are compiled in. forge-std and v4-core are for the tests
 only.
@@ -197,7 +208,7 @@ only.
   anyone). Nothing goes to `0x…dEaD`, which never lowered $IMD's supply. Trust: IMD (the BurnExecutor's owner,
   `0x047F…54B7`) can `rescueToken`, `rescueETH`, `setBaseBurnReceiver` and `setBridgeConfig`: the same trust as every
   other $IMD burn. LARP doesn't bridge itself: the fee would eat a third of a cheap name's.
-- **All four land at 0x6900… by CREATE3** (`src/place`): the launch's two contracts, `PlaceLARP` (the burner, the
+- **The planned addresses start with 0x6900… through CreateX CREATE3 when their salts are unused at launch** (`src/place`): the launch's two contracts, `PlaceLARP` (the burner, the
   registry, IMD Names) and `PlaceLinks` (the links; it takes `$contract:PlaceLARP`), take no other constructor
   argument, so no IMD protocol address reaches the launch's manifest (the launcher LARPLinks reads parked launch #1395).
   They create the four through CreateX (`0xba5E…ba5Ed`) with salts mined so each address starts 0x6900
@@ -206,12 +217,15 @@ only.
   never taken (CREATE3 doesn't bind code to an address): that contract goes to the placement's own CREATE3 address, and
   the others still find it (`test_ASaltUsedFirstIsNeverTaken`).
 
-  | contract | address |
+  These are **conditional planned addresses**, not a deployment handoff. An occupied salt makes the genuine
+  contract land elsewhere while arbitrary code can remain at the planned address. Integrations, the site and
+  manifest notes must use the confirmed handoff from `PlaceLARP.burner()`, `PlaceLARP.larp()`, `PlaceLARP.names()`
+  and `PlaceLinks.links()`, and verify the deployed code. Do not discover the genuine contracts from this table or
+  from `LARPPlan.*_AT` alone.
+
+  | contract | planned address (only if unused at launch) |
   |---|---|
   | `LARPBurner` | `0x69006faEc2D2094e375cAFA5e3C87C5cB2847bef` |
   | `LARP` | `0x69000A4A9FA561Dd6b313741bf1F79F4aDE4adAF` |
   | `IMDNames` | `0x690084D1331F7a6509EeD32e7d34ffAcB377d807` |
   | `LARPLinks` | `0x69005EdeC64B8586EC8d5E32f757a818b5d493C0` |
-
-Where the sections below say 6.9% or `0x…dEaD`, read the above: 6.9% is the share at launch, and IMD's burn takes
-what went to `0x…dEaD`.

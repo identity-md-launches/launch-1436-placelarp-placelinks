@@ -120,8 +120,14 @@ contract MockIntake {
 
     address public immutable treasury = address(0x7EA5);
     uint256 public count;
+    bytes32 public nextRequestId;
     mapping(bytes32 => Ask) public asks;
     bytes public lastBody;
+
+    /// @dev A published signature vector has a fixed request id; its proposal must use that same id.
+    function setNextRequestId(bytes32 requestId) external {
+        nextRequestId = requestId;
+    }
 
     function requestWithFailure(
         bytes32,
@@ -134,6 +140,10 @@ contract MockIntake {
         require(amount >= 0.5 ether, "PriceNotMet");
         MockIMD(asset).transferFrom(msg.sender, treasury, amount);
         requestId = keccak256(abi.encode("intake", ++count));
+        if (nextRequestId != bytes32(0)) {
+            requestId = nextRequestId;
+            delete nextRequestId;
+        }
         asks[requestId] = Ask(msg.sender, body, callback.target, callback.selector, onFailure, amount);
         lastBody = body;
     }
@@ -258,8 +268,7 @@ abstract contract Base is Test {
 
     function _newBurner(address poolManager, address names_) internal returns (LARPBurner) {
         return new LARPBurner(
-            poolManager, address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0),
-            names_
+            poolManager, address(imd), 10_000, 60, address(0), 10_000, 200, address(imd6900), 0, 60, address(0), names_
         );
     }
 

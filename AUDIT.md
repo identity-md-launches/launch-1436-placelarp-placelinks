@@ -5,9 +5,11 @@ Scope: `src/` at this commit: `LARPBurner`, `LARP` / `ILARP`, `IMDNames` / `IIMD
 - No owner, no admin, no upgrades.
 - The one role is the names' **artist**, who can change only the art (tokenURI's renderer) and can lock it forever.
 
-**Result: no critical, high or medium findings open.** 150 offline tests, plus 11 on an Ethereum fork. Five findings
-fixed (L-01, L-02 before the launch; L-09, L-10, L-11 at the launch review, two of them rated medium there), each held
-by a test that fails without the fix (see `ADAPTATION.md`). The rest acknowledged and documented.
+**Adaptation review:** the supplied audit's native-settlement issue (medium, L-14) and cross-proposal verdict issue
+(low, L-15) reproduced and are fixed below. Existing fixes L-01, L-02 and L-09–L-11 remain in place. See
+`ADAPTATION.md` for current command results and `AUDIT-COVERAGE.md` for every entry-point answer. The current suite
+contains 290 tests: 277 pass offline and 13 require a mainnet RPC and explicitly skip without it. Earlier fork
+observations below are historical; live dependencies were not revalidated in this adaptation.
 
 ## Trust: what LARP depends on, and what happens if it fails
 
@@ -15,12 +17,12 @@ by a test that fails without the fix (see `ADAPTATION.md`). The rest acknowledge
 |---|---|---|
 | identity.md `0x0000eC93…` | its contract | inherent: LARP is about these tokens |
 | Uniswap v4 PoolManager | nobody (immutable) | — |
-| POOL4 (ETH/$IMD 1%, hook `0xc6C9…`) | IMD's treasury owns the hook (it can `closeMarket`) | the burner falls to route 2, whether the hook refuses or eats all its gas (the leg runs on a 3M gas budget, L-09) |
+| POOL4 (ETH/$IMD 1%, hook `0xc6C9…`) | IMD's treasury owns the hook (it can `closeMarket`) | the burner falls to the hookless route (route 1); a hostile hook can consume its entire 3M budget on every ETH-paid call before fallback (L-09) |
 | hookless ETH/$IMD pool (1%, spacing 200) | nobody (no hook); its LPs can withdraw | the ETH waits in the burner; anyone burns it later |
-| IMD6900/$IMD pool (hook `0x667f…2A44`) | the IMD6900 ETH timelock owns the hook | the 6.9% that buys IMD6900 goes to `0x…dEaD` as $IMD instead |
-| IMD6900 (`0x0000198C…`, upgradeable) | the IMD6900 ETH timelock | if its `burn` refuses, or eats all the gas it is given (a hostile or buggy upgrade), the same: the share goes to `0x…dEaD` as $IMD; the leg runs on a 3M gas budget, so it can't halt the burner (L-09) |
+| IMD6900/$IMD pool (hook `0x667f…2A44`) | the IMD6900 ETH timelock owns the hook | the swarm-voted share (initially 6.9%) goes to IMD_BURN as $IMD instead; a hostile pair hook can consume the pair leg's 3M budget on every paid call |
+| IMD6900 (`0x0000198C…`, upgradeable) | the IMD6900 ETH timelock | if its `burn` refuses, or eats all the gas it is given (a hostile or buggy upgrade), the share goes to IMD_BURN as $IMD; the leg can consume its 3M budget on every paid call. With both budgeted legs hostile, allow roughly 6M plus overhead and estimate gas afresh (L-09) |
 | WETH9 (`0xC02a…6Cc2`, immutable) | nobody | royalties paid in WETH are unwrapped on each `burn`; if WETH refused, they would wait there |
-| $IMD (LayerZero OFT, owner `0x047F…`) | IMD's treasury (peers) | $IMD at `0x…dEaD` can never move, whatever the token's owner does |
+| $IMD (LayerZero OFT, owner `0x047F…`) | IMD's treasury (peers) | $IMD is forwarded to IMD's BurnExecutor, whose owner can rescue or redirect it; bridging/burning depends on IMD's system |
 | IMD's launcher `distributorOf` | immutable contract; IMD writes the airdrop roots | jeet ranks are only as true as IMD's airdrops; nothing else depends on it |
 | the names' renderer | the artist, until locked | art only; a failing renderer falls back to the built-in card |
 | IMD's oracle (attester `0x5598…2982`, Intake `0xa43e…de82`, owned by IMD's treasury) | IMD | price changes only. A verdict needs its signature, for this contract, on the contract's own proposal; a bad one can move prices at most 2x a week, within 0.00001-1 ETH and short >= long. If IMD stops answering, prices stay. |
@@ -58,10 +60,14 @@ leg which eats all the gas it is given, at any limit, then always looks starved,
 of a hook) made every burn revert `TooLittleGas` and halted every paid entry point (L-09). The budget settles both: a
 caller can't starve a leg, and a leg can't hold the burner hostage.
 
-**Cost:** a burn needs a gas limit of about 3.35M (measured locally: 3.31M for POOL4 plus the IMD6900 leg, 3.21M for
+**Healthy-path cost:** a burn needs a gas limit of about 3.35M (measured locally: 3.31M for POOL4 plus the IMD6900 leg, 3.21M for
 `burnImd`), and so do `register`, `link`, `foundCrew` and their $IMD twins; `eth_estimateGas` finds it, since above the
-threshold the outcome no longer depends on the limit. Gas used does not change (~215k for a full burn); only in the
-hostile case does a leg actually spend its 3M. A refused call moves nothing.
+threshold the outcome no longer depends on the limit. The healthy path uses much less gas than its required limit. A hostile leg can spend essentially its whole 3M
+budget on every payment. If POOL4's hook consumes its budget, funding the later pair leg needs about another 3.2M
+plus overhead; with both hostile, about 6M gas is consumed. `test_HostileLegsCostPaidCallsTheirBudgets` exercises
+registration at 6.8M (6,026,491 gas consumed locally) and rejects 3.4M atomically. This cost persists until the dependency recovers. The share can
+reach zero via four approved steps from 690 bps (345, 173, 87, 0), subject to weekly cooldown; route 0 has no disable
+switch. A refused call moves nothing; 3.4M is not a universal payment limit.
 
 **Tests:**
 - `test_ASwapOutOfGasReverts` (a PoolManager that burns all gas): route 0 spends its budget and is skipped, the
@@ -90,7 +96,7 @@ costs its share; a hostile POOL4 falls to the hookless pool) held only for a ref
 **Fix:** the legs that run third-party code get the fixed budget described under L-01; a leg that eats all of it is
 skipped (the IMD6900 share burns as $IMD; route 0 falls to the hookless pool). **Tests:**
 `test_AGasEatingIMD6900IsSkippedNotFatal` (an IMD6900 whose `burn` loops forever: `burn` at 30M gas spends the ETH and
-burns all the $IMD, `burnImd` burns everything to DEAD, and 1M gas is refused, not skipped) and
+burns all the $IMD, `burnImd` sends everything to IMD_BURN, and 1M gas is refused, not skipped) and
 `test_AGasEatingPool4HookFallsToTheHooklessPool` (a v4 hook that loops forever: the fee is bought on route 1).
 
 ### L-10 Batched `burn(0)` calls sold all the waiting ETH at one price (LARPBurner; launch review, rated medium)
@@ -125,8 +131,8 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
     about what it saves, even for a batch of names in one transaction.
 - **L-08 Price governance trusts IMD's oracle.**
   - **What it rests on:** a verdict rests on IMD's attester key and its 9-agent panel (7 must agree).
-  - **What IMD's writer can do:** it can't forge a verdict. It can withhold one, or pair it with the wrong one of this
-    contract's own pending proposals; the guardrails bound both.
+  - **What IMD's writer can do:** it cannot forge a verdict or apply it to another request after L-15. It can
+    withhold a verdict or report an unsigned failure; the oracle signer remains trusted to judge the actual question.
   - **The question hash isn't pinned:** IMD computes it off chain (`oracleQuestionHash`), so the binding is the Intake's
     request id, as IMD documents for consumers on the asking chain.
   - **How it was validated:** the contract writes the whole question, and IMD's free quote accepted it (status
@@ -136,7 +142,7 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
     worth sandwiching.
   - **Where its fee goes:** the pair hook keeps its own 6.9% fee as protocol liquidity.
   - **If it fails:** an empty pair pool, a hook that refuses, an IMD6900 that won't burn, or one that eats all the
-    gas it is given, all send the share to `0x…dEaD` (`test_AnEmptyPairPoolMeansItAllBurnsAsIMD`,
+    gas it is given, all send the share to IMD_BURN (`test_AnEmptyPairPoolMeansItAllBurnsAsIMD`,
     `test_AnIMD6900ThatWontBurnMeansItAllBurnsAsIMD`, `test_AGasEatingIMD6900IsSkippedNotFatal`).
 
 - **L-03 Name sniping.** A pending `register` can be front-run. There is no commit-reveal, and the sniper pays the full
@@ -185,12 +191,12 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
 - **6.9% buys IMD6900, and it is burned.**
   - **Where it buys:** the IMD6900/$IMD pool, through the real hook's per-trade IMD6900 allowance.
   - **How it burns:** with IMD6900's own `burn`, so the supply drops.
-  - **On the fork:** a 0.0069 ETH name fee burned 16,849 IMD6900 and sent 1.81 $IMD to `0x…dEaD`.
+  - **On the fork:** a 0.0069 ETH name fee burned 16,849 IMD6900 and sent 1.81 $IMD to the then-configured burn destination.
   - **Gas:** across gas limits, no call skips the IMD6900 buy, even when the leg is heavy: the leg runs on a fixed
     budget, and a call that can't fund it is refused (`test_NoGasLimitSkipsARoute`,
     `test_NoGasLimitSkipsAHeavyIMD6900Leg`). A leg that eats its whole budget is skipped, not fatal (L-09).
 - **The burner's ETH leaves only as a swap.** The sale is exact or nothing; a partial fill reverts the route. $IMD
-  goes only to `0x…dEaD`. Only the PoolManager calls back, and only for the burner's own unlock. A transient lock
+  goes only to IMD_BURN unless spent buying IMD6900. Only the PoolManager calls back, and only for the burner's own unlock. A transient lock
   refuses a burn inside a burn (`test_NoReentry`). Of the ETH already waiting, at most `MAX_BURN` leaves per block
   (L-10).
 - **Agent signatures** use EIP-712 over (identity, agent, holder, nonce, deadline), bound to the chain and contract.
@@ -198,14 +204,14 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
   - A per-holder nonce, bumped by every agent change, voids unused signatures.
   - Contract wallets sign through ERC-1271.
   - An EOA path is tried first, so EIP-7702 accounts work.
-  (`test/LARPAgents.t.sol`: 14 tests.)
+  (`test/LARPAgents.t.sol`.)
 - **Names.**
   - Two-way links: one name per identity, one identity per name.
   - Live only while the linker owns both.
   - The toll is due whenever the owner isn't the one who last paid.
   - A broken, gas-hungry or code-less renderer falls back to the card.
-  (`test/IMDNames.t.sol`: 28 tests, including payments in $IMD.)
-- **Swarm prices.** All checked in `test/SwarmPrices.t.sol` (15 tests):
+  (`test/IMDNames.t.sol`, including payments in $IMD.)
+- **Swarm prices.** All checked in `test/SwarmPrices.t.sol`:
   - **Signatures:** IMD's EIP-712 `OracleAttestation`, domain "IdentityMD Oracle" v2, for this contract. The callback's
     parameters are IMD's; its name is this contract's: `onVerdict`, selector `0x8bf09c1b`, which `propose` registers
     with the Intake (IMD's example name `onOracleResult` with the same parameters would be `0x510379c7`).
@@ -215,8 +221,11 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
   - **Execution:** one change a week, stale after another change, within two weeks of the verdict, once.
   - **On the fork:** the real Intake path (`test_APriceProposalThroughIMDsRealIntake`).
 - **Merkle proofs** and **placement bookkeeping** as before (`test_AnInnerNodeIsNotALeaf`, three invariants).
-- **Launch constraints.** The constructors call nothing, and no CALLCODE / DELEGATECALL / SELFDESTRUCT appears anywhere.
-  The four contracts take about 8.6M gas together, in one transaction (`test/Launch.t.sol`).
+- **Launch constraints.** The four application constructors call nothing; the placements call CreateX when present
+  and PlaceLinks reads the earlier PlaceLARP. No CALLCODE / DELEGATECALL / SELFDESTRUCT appears in their scanned code.
+  The four underlying contracts are checked in `test/Launch.t.sol`; `test/Placement.t.sol` checks the actual two
+  placements, their embedded creations, fresh-chain fallback, occupied salts and full transaction bounds. Its test
+  helper uses real CREATE so Foundry test linking cannot omit constructor gas from the measurement.
 
 ## v2 (2026-10-12)
 
@@ -225,9 +234,45 @@ Where WETH has no code (a test chain) or refuses, nothing happens. **Test:** `te
   Names is missing, reverts, eats the gas or answers more than 100% (`test_TheBurnerFallsBackTo6Point9`). At 100% nothing
   reaches IMD's burn unless the IMD6900 buy fails; at 0% nothing buys IMD6900 (`test_UpToAllOfIt`,
   `test_AndDownToNothing`).
-- **$IMD goes to IMD's BurnExecutor**, not `0x…dEaD` (above). Read the trust rows' `0x…dEaD` as IMD's burn.
+- **$IMD goes to IMD's BurnExecutor**, not `0x…dEaD` (above). The trust table uses the v2 beneficiary.
 - **Placement by CREATE3** (README, v2): no IMD protocol address is a launch constructor argument; a salt used first is
   never taken (`test_ASaltUsedFirstIsNeverTaken`); a chain without CreateX gets the placements' own CREATE3
   (`test_DeploysOnAFreshChain`).
-- **Tests:** 290, all pass (with MAINNET_RPC_URL: the fork's, including the launch landing at 0x6900… through the real
-  CreateX and a name burning the canonical way). The fuzz seed is fixed (foundry.toml) so every run draws the same cases.
+- **Tests:** 290 total, with the current offline/fork split recorded above. Fork checks cover the real CreateX and
+  a name burning the canonical way when an RPC is supplied. The fuzz seed remains fixed at `0x6900` in foundry.toml.
+
+
+## Adaptation fixes (this review)
+
+### L-14 Permissionless ERC-20 sync could park native fees (medium)
+
+Reproduced the supplied `ecb342033999…` proof against the arriving code: pre-syncing IMD and then calling `burn`
+or `register` in one external helper frame parked ETH despite liquid pools. Separate top-level Forge calls are
+insufficient to reproduce transaction-scoped transient state. Both proof tests failed before the fix and pass after.
+
+`LARPBurner.unlockCallback` now calls `POOL_MANAGER.sync(address(0))` immediately before native settlement on both
+ETH routes. `burn` charges the waiting-ETH block allowance only after a successful route, so a genuinely parked
+attempt cannot prevent a later successful retry in the same block. The existing transient lock covers the change.
+`test/LARPBurnerSettlement.t.sol` covers both routes, POOL4 priority, all three ETH fee paths, the pair split,
+minimum-output rollback, and retry after liquidity returns. Per-call/per-block caps and caller gas rejection remain.
+
+### L-15 An oracle verdict could approve an unrelated proposal (low)
+
+Reproduced the supplied `1a161ad00bdd…` proof: the same valid signature approved proposals A and B. `onVerdict` now
+requires the signed `a.requestId` to equal its callback `requestId`, otherwise reverting with the existing
+`BadVerdictSignature` error before any status or timestamp changes. Signature format and callback ABI are unchanged.
+
+Governance tests now sign their actual proposal IDs. The published signature vector is preserved byte-for-byte;
+the test Intake returns that vector's fixed request ID. Regressions cover replay across pending proposals with
+different prices/share, arbitrary mismatched IDs, tampering, valid retry, and one-time settlement. Weak/expired/wrong-chain
+verdict behavior and the weekly guardrails remain unchanged.
+
+## Placement publication and coverage
+
+`LARPPlan.*_AT` and README's table are conditional predictions, not authenticated deployments. Existing occupied-salt
+fallback remains unchanged and tested. Consumers must use the confirmed placement getters and verify their code.
+
+`AUDIT-COVERAGE.md` records every entry point in the supplied list. Its ABI count is 149 when `receive` and both
+safe-transfer overloads are separate (six constructors plus 142 functions plus receive); the brief labels this list
+148. All listed entries are covered, ratio 1. Live dependencies and fork results are explicitly separate from this
+local source review.

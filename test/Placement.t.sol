@@ -15,8 +15,16 @@ contract ImdStyleDeployer {
     PlaceLinks public placeLinks;
 
     function launch() external {
-        placeLARP = new PlaceLARP();
-        placeLinks = new PlaceLinks(placeLARP);
+        // Use real CREATE so test linking cannot replace `new` with a zero-gas deployCode cheatcode.
+        placeLARP = PlaceLARP(_create(type(PlaceLARP).creationCode));
+        placeLinks = PlaceLinks(_create(abi.encodePacked(type(PlaceLinks).creationCode, abi.encode(placeLARP))));
+    }
+
+    function _create(bytes memory code) internal returns (address deployed) {
+        assembly ("memory-safe") {
+            deployed := create(0, add(code, 32), mload(code))
+        }
+        require(deployed != address(0), "placement failed");
     }
 }
 
@@ -200,7 +208,9 @@ contract PlacementTest is PlacementBase {
         bytes[] memory codes = new bytes[](2);
         codes[0] = type(PlaceLARP).creationCode;
         codes[1] = abi.encodePacked(type(PlaceLinks).creationCode, abi.encode(address(1)));
-        for (uint256 i; i < codes.length; ++i) assertLt(codes[i].length, INITCODE_CAP, "each placement under EIP-3860");
+        for (uint256 i; i < codes.length; ++i) {
+            assertLt(codes[i].length, INITCODE_CAP, "each placement under EIP-3860");
+        }
         ImdStyleDeployer d = new ImdStyleDeployer();
         uint256 g = gasleft();
         d.launch();
@@ -271,8 +281,11 @@ contract PlacementForkTest is PlacementBase {
         (p, q) = _launch(makeAddr("IMD's deployer"));
     }
 
-    function test_fork_LandsAt6900ThroughTheRealCreateX() public view {
-        if (!forked) return;
+    function test_fork_LandsAt6900ThroughTheRealCreateX() public {
+        if (!forked) {
+            vm.skip(true);
+            return;
+        }
         assertGt(LARPPlan.CREATEX.code.length, 0, "Ethereum has CreateX");
         assertEq(p.burner(), LARPPlan.BURNER_AT);
         assertEq(p.larp(), LARPPlan.LARP_AT);
@@ -284,7 +297,10 @@ contract PlacementForkTest is PlacementBase {
     /// @dev A name's fee buys $IMD on POOL4: 6.9% of it buys IMD6900 on its $IMD pool and burns it, the rest reaches
     ///      IMD's burn (its BurnExecutor), and nothing goes to 0x..dEaD
     function test_fork_ANameBurnsTheCanonicalWay() public {
-        if (!forked) return;
+        if (!forked) {
+            vm.skip(true);
+            return;
+        }
         IMDNames n = IMDNames(p.names());
         bytes32 label = bytes32("larp-launch");
         uint256 price = n.priceOf(label);
@@ -311,7 +327,9 @@ contract PlacementForkTest is PlacementBase {
         bytes32 sig = keccak256("Burned(uint256,uint256,uint256)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == burner && logs[i].topics[0] == sig) (burned, spent,) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+            if (logs[i].emitter == burner && logs[i].topics[0] == sig) {
+                (burned, spent,) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+            }
         }
     }
 
